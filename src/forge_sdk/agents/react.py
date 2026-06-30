@@ -178,13 +178,24 @@ class ReactAgent:
 
     def _task_implies_edits(self, task: str) -> bool:
         """Heuristic: does the task prompt imply code/file changes are expected?"""
-        return bool(_ACTION_VERBS.search(task))
+        if _ACTION_VERBS.search(task):
+            return True
+        # Semantic analysis — flag zero-edit with error-related keywords
+        _ERROR_KEYWORDS = re.compile(
+            r"\b(bug|error|vulnerability|security|critical|urgent|broken|failing|"
+            r"crash|exception|stack.?trace|traceback|regression|issue|problem|"
+            r"failure|fault|defect|weakness|exploit|injection|overflow)\b",
+            re.IGNORECASE,
+        )
+        if _ERROR_KEYWORDS.search(task):
+            return True
+        return False
 
     async def arun(self, context: AgentContext) -> AgentResult:
         """Async core — the canonical execution loop."""
+        guard = LoopGuard(max_repeats=self._guard.max_repeats)  # Fresh guard per run
         steps: list[AgentStep] = []
         messages = self._build_messages(context)
-        self._guard.reset()
         all_edits: list[str] = []
 
         for step_num in range(1, context.max_steps + 1):
@@ -212,10 +223,10 @@ class ReactAgent:
 
             if not is_final:
                 # LoopGuard check — INV-204
-                if self._guard.check(action, action_input):
+                if guard.check(action, action_input):
                     observation = (
                         f"BLOCKED: You have called '{action}' with the same arguments "
-                        f"{self._guard.max_repeats} times. This indicates you are stuck. "
+                        f"{guard.max_repeats} times. This indicates you are stuck. "
                         f"Try a completely different approach or finish if possible."
                     )
                     loop_guard_triggered = True

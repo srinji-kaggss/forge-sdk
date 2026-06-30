@@ -34,6 +34,7 @@ class MeshModelPort:
         self._trust_class = trust_class
         self._default = default
         self._fallback = fallback_provider
+        self._providers: dict[str, ModelPort] = {}  # Cache resolved providers
 
     # -- ModelPort protocol properties (delegated to resolved provider) -------
 
@@ -49,15 +50,18 @@ class MeshModelPort:
 
     @property
     def context_window(self) -> int:
-        return self._delegate().context_window
+        provider_name = self._resolve_model()[0]
+        return self._get_provider(provider_name).context_window
 
     @property
     def max_output(self) -> int:
-        return self._delegate().max_output
+        provider_name = self._resolve_model()[0]
+        return self._get_provider(provider_name).max_output
 
     @property
     def supports_reasoning(self) -> bool:
-        return self._delegate().supports_reasoning
+        provider_name = self._resolve_model()[0]
+        return self._get_provider(provider_name).supports_reasoning
 
     # -- ModelPort protocol methods ------------------------------------------
 
@@ -69,9 +73,9 @@ class MeshModelPort:
         max_tokens: int | None = None,
         stop: list[str] | None = None,
     ) -> ModelResponse:
-        return self._delegate().complete(
-            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
-        )
+        provider_name, model_id = self._resolve_model()
+        provider = self._get_provider(provider_name)
+        return provider.complete(messages, temperature=temperature, max_tokens=max_tokens, stop=stop)
 
     def complete_stream(
         self,
@@ -81,7 +85,9 @@ class MeshModelPort:
         max_tokens: int | None = None,
         stop: list[str] | None = None,
     ) -> list[ModelChunk]:
-        return self._delegate().complete_stream(
+        provider_name, model_id = self._resolve_model()
+        provider = self._get_provider(provider_name)
+        return provider.complete_stream(
             messages, temperature=temperature, max_tokens=max_tokens, stop=stop
         )
 
@@ -104,12 +110,10 @@ class MeshModelPort:
         provider, model = self._default.split(":", 1)
         return provider, model
 
-    def _delegate(self) -> ModelPort:
-        """Create a ModelPort for the currently-resolved provider+model."""
-        provider_name, model_id = self._resolve_model()
-        try:
-            return registry.create(provider_name, model=model_id)
-        except KeyError:
-            if self._fallback is not None:
-                return self._fallback
-            raise
+    def _get_provider(self, provider_name: str) -> ModelPort:
+        """Get or create cached provider instance."""
+        if provider_name not in self._providers:
+            from forge_sdk.models import registry as _registry
+            model_id = self._resolve_model()[1]
+            self._providers[provider_name] = _registry.create(provider_name, model=model_id)
+        return self._providers[provider_name]

@@ -7,6 +7,8 @@ This adapter bridges the two.
 
 from __future__ import annotations
 
+import logging
+import shlex
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -48,9 +50,24 @@ class LgwksToolAdapter:
     def to_tool_spec(self) -> ToolSpec:
         """Convert to forge ToolSpec."""
         fn = self._fn
+        _log = logging.getLogger("forge.tools.adapters")
 
         async def handler(**kwargs: Any) -> ToolResult:
             try:
+                # Sanitize shell commands to prevent injection
+                if "command" in kwargs:
+                    command = kwargs["command"]
+                    _log.warning("SHELL COMMAND: %s", command)
+                    try:
+                        kwargs["command"] = shlex.split(command)
+                        kwargs["shell"] = False
+                    except ValueError:
+                        _log.warning(
+                            "SHELL: shlex.split failed, using shell=True for: %s",
+                            command,
+                        )
+                        kwargs["shell"] = True
+
                 result = await fn(**kwargs)
                 return ToolResult(
                     success=result.get("success", True),
