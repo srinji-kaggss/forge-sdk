@@ -9,6 +9,21 @@ import time
 from pathlib import Path
 
 
+def scope_path_to_cwd(path_str: str, run_cwd: Path) -> Path:
+    """Resolve a config-relative path (trace_dir, audit_db) against the
+    run's --cwd instead of the process's real os.getcwd().
+
+    Issue #23 covered tool-call paths via AgentContext.cwd but missed this
+    CLI layer: trace_dir/audit_db are relative paths in ForgeConfig, so they
+    silently resolved against wherever `forge run` was invoked from instead
+    of --cwd, scattering a concurrent batch's traces into one shared
+    directory instead of each task's own worktree. An absolute path is left
+    untouched, matching ReactAgent._resolve_cwd's convention.
+    """
+    path = Path(path_str)
+    return path if path.is_absolute() else run_cwd / path
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Run an agent on a task."""
     from forge_sdk.agents.react import ReactAgent
@@ -33,8 +48,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     for tool in FILE_TOOLS + SEARCH_TOOLS + [SHELL_TOOL]:
         tools.register(tool)
 
+    run_cwd = Path(args.cwd or cfg.cwd).expanduser()
+
     tracer = Tracer()
-    audit = AuditLog(cfg.audit_db)
+    audit = AuditLog(str(scope_path_to_cwd(cfg.audit_db, run_cwd)))
     verifier = Verifier()
 
     agent = ReactAgent(model=model, tools=tools, tracer=tracer, audit=audit, verifier=verifier)
@@ -62,7 +79,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"\nOutput:\n{result.output}")
 
     # Export traces
-    trace_dir = Path(cfg.trace_dir)
+    trace_dir = scope_path_to_cwd(cfg.trace_dir, run_cwd)
     trace_dir.mkdir(parents=True, exist_ok=True)
     trace_path = trace_dir / f"{tracer.trace_id}.jsonl"
     tracer.export_jsonl(trace_path)
