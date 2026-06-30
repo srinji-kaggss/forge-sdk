@@ -61,12 +61,14 @@ class LgwksToolAdapter:
                     try:
                         kwargs["command"] = shlex.split(command)
                         kwargs["shell"] = False
-                    except ValueError:
-                        _log.warning(
-                            "SHELL: shlex.split failed, using shell=True for: %s",
-                            command,
+                    except ValueError as exc:
+                        return ToolResult(
+                            success=False,
+                            output="",
+                            error=f"Command parse failed (unbalanced quotes): {exc}. "
+                                  f"Fix the quoting. shell=True fallback is disabled for security.",
+                            metadata={"command": command, "blocked": True},
                         )
-                        kwargs["shell"] = True
 
                 result = await fn(**kwargs)
                 return ToolResult(
