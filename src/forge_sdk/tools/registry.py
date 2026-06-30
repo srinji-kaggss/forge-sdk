@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from forge_sdk.tools import ToolSpec
+from forge_sdk.tools.types import ToolSpec
 
 
 class ToolRegistry:
