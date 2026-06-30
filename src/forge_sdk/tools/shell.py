@@ -1,20 +1,66 @@
 """Shell execution tool — runs commands in a subprocess.
 
-AI-native: includes safety guidance, timeout handling, structured error recovery.
+v0.4.0: Uses shell=False by default (shlex.split), audit logging, timeout validation.
 """
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 
 from forge_sdk.tools import ToolResult, ToolSpec
 
+# Paths that commands must not read/write/execute on
+_SENSITIVE_PATHS = ("/etc/passwd", "/etc/shadow", "/etc/sudoers", "/root/", "/proc/", "/sys/")
+_DANGEROUS_CMDS = ("rm -rf", "dd ", "mkfs", ":(){ :|:& };:", "> /dev/sda")
+
+
+def _check_command_safety(command: str) -> str | None:
+    """Return error message if command is unsafe, else None."""
+    cmd_lower = command.lower()
+    # Block dangerous command patterns
+    for d in _DANGEROUS_CMDS:
+        if d in cmd_lower:
+            return f"BLOCKED: dangerous command pattern '{d}'"
+    # Block commands targeting sensitive files
+    for path in _SENSITIVE_PATHS:
+        if path in command:
+            return f"BLOCKED: command targets sensitive path '{path}'"
+    return None
+
 
 async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
+    # Validate timeout
+    timeout = min(max(timeout, 1), 300)
+
+    # Security check
+    violation = _check_command_safety(command)
+    if violation:
+        import logging
+        logging.getLogger("forge.tools.shell").warning("BLOCKED: %s", violation)
+        return ToolResult(success=False, output="", error=violation,
+                          metadata={"command": command, "blocked": True})
+
+    # Audit log every command
+    import logging
+    logging.getLogger("forge.tools.shell").warning("SHELL: %s (cwd=%s)", command, cwd)
+
+    # Try shell=False first (safer)
+    try:
+        args = shlex.split(command)
+        use_shell = False
+    except ValueError:
+        # Complex command — fall back to shell=True but warn
+        args = command
+        use_shell = True
+        logging.getLogger("forge.tools.shell").warning(
+            "SHELL: shlex.split failed, using shell=True for: %s", command[:100]
+        )
+
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            args,
+            shell=use_shell,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -31,7 +77,6 @@ async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
                 metadata={"exit_code": result.returncode, "command": command},
             )
         else:
-            # Structured error: tell the AI what happened and how to recover
             suggestion = ""
             if result.returncode == 127:
                 suggestion = "Command not found. Check if the program is installed."

@@ -1,11 +1,6 @@
 """File system tools — read, write, list.
 
-AI-native tool descriptions following the firecrawl pattern:
-- What it does (purpose)
-- When to use / when NOT to use
-- Common mistakes
-- Example invocation
-- What the output looks like
+v0.4.0: File size limits, path containment, encoding awareness.
 """
 
 from __future__ import annotations
@@ -14,6 +9,12 @@ import os
 from pathlib import Path
 
 from forge_sdk.tools import ToolResult, ToolSpec
+
+# Max file size for reads (10MB)
+MAX_READ_BYTES = 10 * 1024 * 1024
+
+# Paths that should never be written to
+FORBIDDEN_PATHS = ("/etc", "/usr", "/var", "/sys", "/proc", "/dev")
 
 
 async def _read_file(path: str) -> ToolResult:
@@ -33,6 +34,15 @@ async def _read_file(path: str) -> ToolResult:
                 error=f"Not a file (it's a directory): {p}",
                 metadata={"suggestion": f"Use list_dir to see contents of {p}"},
             )
+        # Size check
+        file_size = p.stat().st_size
+        if file_size > MAX_READ_BYTES:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"File too large ({file_size} bytes, max {MAX_READ_BYTES})",
+                metadata={"suggestion": "Read a specific section or use grep to find relevant parts"},
+            )
         content = p.read_text(encoding="utf-8", errors="replace")
         return ToolResult(
             success=True,
@@ -48,6 +58,15 @@ async def _read_file(path: str) -> ToolResult:
 async def _write_file(path: str, content: str) -> ToolResult:
     try:
         p = Path(path).expanduser().resolve()
+        # Path containment: block writes to system directories
+        for forbidden in FORBIDDEN_PATHS:
+            if str(p).startswith(forbidden):
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Write to system directory blocked: {p}",
+                    metadata={"suggestion": "Write to a user directory instead (e.g., ~/, /tmp/)"},
+                )
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return ToolResult(
@@ -77,16 +96,20 @@ async def _list_dir(path: str = ".") -> ToolResult:
                 metadata={"suggestion": f"Use read_file to read {p} if it's a file"},
             )
         entries = sorted(os.listdir(p))
-        # Format for AI: show dirs with / suffix, group by type
         formatted = []
-        for e in entries:
+        for e in entries[:200]:  # Limit to 200 entries
             full = p / e
-            if full.is_dir():
-                formatted.append(f"  {e}/")
-            else:
-                size = full.stat().st_size if full.exists() else 0
-                formatted.append(f"  {e}  ({size} bytes)")
-        output = f"Contents of {p}:\n" + "\n".join(formatted) if formatted else f"Empty directory: {p}"
+            try:
+                if full.is_dir():
+                    formatted.append(f"  {e}/")
+                else:
+                    size = full.stat().st_size if full.exists() else 0
+                    formatted.append(f"  {e}  ({size} bytes)")
+            except (PermissionError, OSError):
+                formatted.append(f"  {e}  (inaccessible)")
+        if len(entries) > 200:
+            formatted.append(f"  ... and {len(entries) - 200} more entries")
+        output = f"Contents of {p} ({len(entries)} entries):\n" + "\n".join(formatted) if formatted else f"Empty directory: {p}"
         return ToolResult(
             success=True,
             output=output,

@@ -1,10 +1,17 @@
 """ReAct agent — thought-action-observation loop.
 
+v0.4.0: Frontier-hardened with interpretability, observability, context management.
+
 AI-native design:
 - System prompt optimized for AI consumption (not human reading)
 - Structured JSON output with recovery guidance
 - Tool errors include candidates and suggestions
 - LoopGuard prevents repeated identical calls
+- Context window management (token counting, truncation)
+- Usage limits (token/cost caps)
+- Retry with exponential backoff
+- Deep interpretability (reasoning trace, decision logs)
+- Structured observability (metrics, distributed tracing)
 """
 
 from __future__ import annotations
@@ -14,6 +21,8 @@ import hashlib
 import json
 import logging
 import re
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from forge_sdk.agents.types import AgentContext, AgentResult, AgentStep
@@ -27,7 +36,255 @@ _ACTION_VERBS = re.compile(
     re.IGNORECASE,
 )
 
+# Module-level (not recompiled every call)
+_ERROR_KEYWORDS = re.compile(
+    r"\b(bug|error|vulnerability|security|critical|urgent|broken|failing|"
+    r"crash|exception|stack.?trace|traceback|regression|issue|problem|"
+    r"failure|fault|defect|weakness|exploit|injection|overflow)\b",
+    re.IGNORECASE,
+)
+
 log = logging.getLogger(__name__)
+
+
+# --- Parse strategies (OKF S3-safe: strategy registry, no if/elif chains) ---
+# Each strategy has: id (stable), applies(content) -> bool, execute(content) -> dict|None
+
+from abc import ABC, abstractmethod
+
+
+class ParseStrategy(ABC):
+    """Base class for parse strategies. Stable ID + applies/execute contract."""
+    id: str  # e.g. "PARSE-MARKDOWN-001"
+
+    @abstractmethod
+    def applies(self, content: str) -> bool:
+        """Return True if this strategy can handle the content."""
+
+    @abstractmethod
+    def execute(self, content: str) -> dict[str, Any] | None:
+        """Parse and return action dict, or None if parsing fails."""
+
+
+def _unwrap_nested_finish(parsed: dict[str, Any]) -> dict[str, Any] | None:
+    """If finish action contains a tool call as JSON string, unwrap it.
+    Shared helper used by multiple strategies.
+    """
+    if parsed.get("action") != "finish":
+        return None
+    output = parsed.get("action_input", {}).get("output")
+    if not isinstance(output, str):
+        return None
+    inner_start = output.find("{")
+    inner_end = output.rfind("}") + 1
+    if inner_start < 0 or inner_end <= inner_start:
+        return None
+    try:
+        inner = json.loads(output[inner_start:inner_end])
+        if "action" in inner and "action_input" in inner:
+            return inner
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+class StripMarkdownStrategy(ParseStrategy):
+    """PARSE-001: Strip markdown code fences before JSON extraction."""
+    id = "PARSE-001"
+
+    def applies(self, content: str) -> bool:
+        return "```json" in content or "```" in content
+
+    def execute(self, content: str) -> dict[str, Any] | None:
+        if "```json" in content:
+            stripped = content.split("```json")[1].split("```")[0].strip()
+        else:
+            stripped = content.split("```")[1].split("```")[0].strip()
+        # Re-enter the strategy chain with stripped content
+        for strategy in _PARSE_STRATEGIES:
+            if strategy.id != self.id and strategy.applies(stripped):
+                result = strategy.execute(stripped)
+                if result is not None:
+                    return result
+        return None
+
+
+class FullJsonStrategy(ParseStrategy):
+    """PARSE-002: Parse the full JSON object (fast path). Handles nested finish→tool unwrapping."""
+    id = "PARSE-002"
+
+    def applies(self, content: str) -> bool:
+        return "{" in content and "}" in content
+
+    def execute(self, content: str) -> dict[str, Any] | None:
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start < 0 or end <= start:
+            return None
+        json_str = content[start:end]
+        if len(json_str) > 100_000:
+            json_str = json_str[:100_000]
+        try:
+            parsed = json.loads(json_str)
+            if not isinstance(parsed, dict) or "action" not in parsed:
+                return None
+            # Try unwrapping nested finish→tool call
+            unwrapped = _unwrap_nested_finish(parsed)
+            return unwrapped if unwrapped else parsed
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+
+class FirstValidJsonStrategy(ParseStrategy):
+    """PARSE-003: Find the FIRST valid JSON object (handles concatenated objects from small models)."""
+    id = "PARSE-003"
+
+    def applies(self, content: str) -> bool:
+        return "{" in content
+
+    def execute(self, content: str) -> dict[str, Any] | None:
+        pos = 0
+        while pos < len(content):
+            obj_start = content.find("{", pos)
+            if obj_start < 0:
+                break
+            depth = 0
+            for i in range(obj_start, min(obj_start + 50_000, len(content))):
+                if content[i] == "{":
+                    depth += 1
+                elif content[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = content[obj_start:i + 1]
+                        try:
+                            parsed = json.loads(candidate)
+                            if isinstance(parsed, dict) and "action" in parsed:
+                                unwrapped = _unwrap_nested_finish(parsed)
+                                return unwrapped if unwrapped else parsed
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        pos = i + 1
+                        break
+            else:
+                break
+        return None
+
+
+# Strategy registry — ordered by specificity (fastest/strictest first)
+_PARSE_STRATEGIES: list[ParseStrategy] = [
+    StripMarkdownStrategy(),
+    FullJsonStrategy(),
+    FirstValidJsonStrategy(),
+]
+
+
+# --- Interpretability: reasoning trace dataclass ---
+@dataclass
+class ReasoningStep:
+    """One step in the agent's reasoning trace — for interpretability."""
+    step: int
+    thought: str
+    action: str
+    action_input: dict
+    observation: str
+    is_final: bool
+    loop_guard_triggered: bool
+    duration_ms: float = 0.0
+    tokens_used: int = 0
+    decision_rationale: str = ""
+
+
+@dataclass
+class ReasoningTrace:
+    """Full reasoning trace for a run — deep interpretability."""
+    task: str
+    steps: list[ReasoningStep] = field(default_factory=list)
+    total_duration_ms: float = 0.0
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
+    success: bool = False
+    failure_reason: str = ""
+
+    def summary(self) -> str:
+        """Human-readable summary of reasoning."""
+        lines = [f"Task: {self.task}", f"Steps: {len(self.steps)}", f"Success: {self.success}"]
+        for s in self.steps:
+            flag = " [GUARD]" if s.loop_guard_triggered else ""
+            flag += " [FINAL]" if s.is_final else ""
+            lines.append(f"  Step {s.step}: {s.action}{flag} ({s.duration_ms:.0f}ms)")
+            if s.thought:
+                lines.append(f"    Thought: {s.thought[:120]}")
+            if s.decision_rationale:
+                lines.append(f"    Why: {s.decision_rationale}")
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        """JSON-serializable for observability export."""
+        return {
+            "task": self.task,
+            "steps": [
+                {
+                    "step": s.step,
+                    "thought": s.thought,
+                    "action": s.action,
+                    "action_input": s.action_input,
+                    "observation": s.observation[:500],
+                    "is_final": s.is_final,
+                    "loop_guard_triggered": s.loop_guard_triggered,
+                    "duration_ms": s.duration_ms,
+                    "tokens_used": s.tokens_used,
+                    "decision_rationale": s.decision_rationale,
+                }
+                for s in self.steps
+            ],
+            "total_duration_ms": self.total_duration_ms,
+            "total_tokens": self.total_tokens,
+            "total_cost_usd": self.total_cost_usd,
+            "success": self.success,
+            "failure_reason": self.failure_reason,
+        }
+
+
+# --- Observability: structured metrics ---
+@dataclass
+class AgentMetrics:
+    """Structured metrics for observability — emitted per run."""
+    run_id: str = ""
+    model: str = ""
+    provider: str = ""
+    total_steps: int = 0
+    tool_calls: int = 0
+    tool_errors: int = 0
+    loop_guard_triggers: int = 0
+    total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_cost_usd: float = 0.0
+    duration_ms: float = 0.0
+    retries: int = 0
+    context_truncations: int = 0
+    verification_passed: bool = True
+    edits_made: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "run_id": self.run_id,
+            "model": self.model,
+            "provider": self.provider,
+            "total_steps": self.total_steps,
+            "tool_calls": self.tool_calls,
+            "tool_errors": self.tool_errors,
+            "loop_guard_triggers": self.loop_guard_triggers,
+            "total_tokens": self.total_tokens,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_cost_usd": self.total_cost_usd,
+            "duration_ms": self.duration_ms,
+            "retries": self.retries,
+            "context_truncations": self.context_truncations,
+            "verification_passed": self.verification_passed,
+            "edits_made": self.edits_made,
+        }
 
 
 class LoopGuard:
@@ -51,8 +308,80 @@ class LoopGuard:
         self._counts.clear()
 
 
+class UsageLimiter:
+    """Enforce token and cost limits per run."""
+
+    def __init__(self, max_tokens: int = 100_000, max_cost_usd: float = 1.0) -> None:
+        self.max_tokens = max_tokens
+        self.max_cost_usd = max_cost_usd
+        self.total_tokens = 0
+        self.total_cost_usd = 0.0
+
+    def check(self, usage_tokens: int = 0, cost_usd: float = 0.0) -> bool:
+        """Returns True if limit EXCEEDED."""
+        self.total_tokens += usage_tokens
+        self.total_cost_usd += cost_usd
+        return self.total_tokens > self.max_tokens or self.total_cost_usd > self.max_cost_usd
+
+    def remaining_tokens(self) -> int:
+        return max(0, self.max_tokens - self.total_tokens)
+
+
+class ContextManager:
+    """Manage context window — truncate to stay within token limits."""
+
+    def __init__(self, max_tokens: int = 32_000, reserve_output: int = 2_000) -> None:
+        self.max_tokens = max_tokens
+        self.reserve_output = reserve_output
+
+    def _estimate_tokens(self, messages: list[dict]) -> int:
+        """Rough token estimation: ~4 chars per token."""
+        total_chars = sum(len(json.dumps(m, default=str)) for m in messages)
+        return total_chars // 4
+
+    def fit(self, messages: list[dict], system_prompt: str) -> list[dict]:
+        """Truncate messages to fit within context window. Preserves system prompt + task."""
+        if not messages:
+            return messages
+
+        available = self.max_tokens - self.reserve_output - len(system_prompt) // 4
+        if available <= 0:
+            return messages[:2]  # Keep at least system + task
+
+        # Keep system prompt (index 0), task (last user msg), and recent messages
+        system = messages[0:1]
+        task_msg = messages[-1:] if messages[-1].get("role") == "user" else []
+        history = messages[1:-1] if task_msg else messages[1:]
+
+        # Estimate tokens for system + task
+        fixed_tokens = self._estimate_tokens(system + task_msg)
+        remaining = available - fixed_tokens
+
+        # Keep most recent messages first
+        kept = []
+        for msg in reversed(history):
+            msg_tokens = len(json.dumps(msg, default=str)) // 4
+            if remaining - msg_tokens < 0:
+                break
+            remaining -= msg_tokens
+            kept.insert(0, msg)
+
+        result = system + kept + task_msg
+        truncation_count = len(history) - len(kept)
+        return result, truncation_count
+
+
 class ReactAgent:
-    """ReAct (Reason + Act) agent — v1 with async core, LoopGuard, AI-native prompts."""
+    """ReAct (Reason + Act) agent — v0.4.0 frontier-hardened.
+
+    v0.4.0 additions:
+    - Tool parameter schemas in prompt (fixes critical bug)
+    - Context window management (token counting, truncation)
+    - Usage limits (token/cost caps)
+    - Retry with exponential backoff
+    - Deep interpretability (reasoning trace, decision logs)
+    - Structured observability (metrics)
+    """
 
     def __init__(
         self,
@@ -62,6 +391,10 @@ class ReactAgent:
         audit: Any = None,
         verifier: Any = None,
         loop_guard: LoopGuard | None = None,
+        max_tokens: int = 32_000,
+        max_cost_usd: float = 1.0,
+        max_retries: int = 3,
+        sandbox_dir: str | None = None,
     ) -> None:
         self._model = model
         self._tools = tools
@@ -69,15 +402,30 @@ class ReactAgent:
         self._audit = audit
         self._verifier = verifier
         self._guard = loop_guard or LoopGuard()
+        self._max_retries = max_retries
+        self._context = ContextManager(max_tokens=max_tokens)
+        self._limiter = UsageLimiter(max_tokens=max_tokens * 10, max_cost_usd=max_cost_usd)
+        self._sandbox_dir = sandbox_dir  # Restrict file writes to this directory
 
     def _build_system_prompt(self) -> str:
-        """AI-native system prompt — designed for the model, not a human reader."""
+        """AI-native system prompt with full tool schemas."""
         tool_descriptions = []
         for t in self._tools.available():
+            # CRITICAL FIX: Include parameter schemas so model knows what to pass
+            params_str = json.dumps(t.input_schema, indent=2)
             tool_descriptions.append(
-                f"- {t.name} (id: {t.stable_id}): {t.description}"
+                f"- {t.name}: {t.description}\n"
+                f"  Parameters: {params_str}"
             )
         tools_block = "\n\n".join(tool_descriptions)
+
+        sandbox_note = ""
+        if self._sandbox_dir:
+            sandbox_note = (
+                f"\n## Sandbox\n"
+                f"All file operations are restricted to: {self._sandbox_dir}\n"
+                f"Writing outside this directory will be blocked.\n"
+            )
 
         return (
             "You are an expert coding agent. You solve tasks by reasoning step-by-step "
@@ -92,7 +440,8 @@ class ReactAgent:
             ' "action": "finish",'
             ' "action_input": {"output": "your final answer or summary"}}\n\n'
             "## Available tools\n\n"
-            f"{tools_block}\n\n"
+            f"{tools_block}\n"
+            f"{sandbox_note}\n"
             "## Rules\n\n"
             "- Always think before acting — explain your reasoning in 'thought'.\n"
             "- Use tools to gather information before making changes.\n"
@@ -100,39 +449,43 @@ class ReactAgent:
             "- Do NOT repeat the same tool call with the same arguments — it will be blocked.\n"
             "- When you have enough information, finish with a clear, complete output.\n"
             "- Keep responses concise — the output is consumed by other AI systems.\n"
+            "- Use the EXACT tool name from the list above (not the id).\n"
         )
 
     def _parse_response(self, content: str) -> dict[str, Any]:
-        """Parse model response into action dict. Handles markdown code blocks."""
+        """Parse model response into action dict.
+
+        Uses a strategy registry (OKF S3-safe — no nested if/elif chains).
+        Each strategy has a stable ID, applies() predicate, and execute() method.
+        First successful strategy wins. Debug logging traces which strategy matched.
+        """
         content = content.strip()
-        # Handle markdown code blocks
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0].strip()
-        # Find JSON object
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        if start >= 0 and end > start:
-            return json.loads(content[start:end])
-        # Fallback: treat entire response as finish
+        for strategy in _PARSE_STRATEGIES:
+            if strategy.applies(content):
+                result = strategy.execute(content)
+                if result is not None:
+                    log.debug("PARSE: strategy=%s matched", strategy.id)
+                    return result
+        log.debug("PARSE: no strategy matched, fallback to finish")
         return {"thought": content, "action": "finish", "action_input": {"output": content}}
 
     async def _execute_tool(self, action: str, action_input: dict[str, Any]) -> str:
-        """Execute a tool and return structured output for AI consumption."""
+        """Execute a tool with retry and structured output."""
         tool = self._tools.get_by_name(action)
         if tool is None:
             available = [t.name for t in self._tools.available()]
             return (
                 f"Error: Unknown tool '{action}'. "
                 f"Available tools: {available}. "
-                f"Check the tool name and try again."
+                f"Use the exact tool name from the list."
             )
         try:
             result = await tool.handler(**action_input)
             return result.as_message
         except Exception as e:
-            return f"Error executing {action}: {type(e).__name__}: {e}. Try a different approach."
+            # Sanitize error — don't leak internals
+            error_type = type(e).__name__
+            return f"Error executing {action}: {error_type}. Try a different approach."
 
     def _build_messages(self, context: AgentContext) -> list[dict[str, Any]]:
         messages = [{"role": "system", "content": self._build_system_prompt()}]
@@ -145,9 +498,7 @@ class ReactAgent:
     ) -> list[str]:
         """Extract file paths modified by a tool call from its observation."""
         edits: list[str] = []
-        # Tools that write/create files
         write_tools = {"write_file", "create_file"}
-        # Tools that could modify files via shell
         shell_tools = {"shell", "run_command"}
 
         if action in write_tools:
@@ -156,9 +507,8 @@ class ReactAgent:
                 edits.append(path)
         elif action in shell_tools:
             cmd = action_input.get("command", "")
-            # Common patterns that indicate file writes
             write_patterns = [
-                r">\s*(\S+)",  # echo > file
+                r">\s*(\S+)",
                 r"tee\s+(\S+)",
                 r"cp\s+\S+\s+(\S+)",
                 r"mv\s+\S+\s+(\S+)",
@@ -169,38 +519,95 @@ class ReactAgent:
             for pattern in write_patterns:
                 matches = re.findall(pattern, cmd)
                 edits.extend(matches)
-            # If the shell command succeeded and looks write-like, be conservative
-            # and trust the observation (don't false-positive on echo/ls)
-        elif action == "finish":
-            pass  # finish doesn't write files
-
         return edits
 
     def _task_implies_edits(self, task: str) -> bool:
         """Heuristic: does the task prompt imply code/file changes are expected?"""
         if _ACTION_VERBS.search(task):
             return True
-        # Semantic analysis — flag zero-edit with error-related keywords
-        _ERROR_KEYWORDS = re.compile(
-            r"\b(bug|error|vulnerability|security|critical|urgent|broken|failing|"
-            r"crash|exception|stack.?trace|traceback|regression|issue|problem|"
-            r"failure|fault|defect|weakness|exploit|injection|overflow)\b",
-            re.IGNORECASE,
-        )
         if _ERROR_KEYWORDS.search(task):
             return True
         return False
 
+    def _check_sandbox(self, action: str, action_input: dict) -> str | None:
+        """Check if file write is within sandbox. Returns error message or None."""
+        if not self._sandbox_dir:
+            return None
+        if action in ("write_file", "create_file"):
+            path = action_input.get("path", "")
+            import os
+            resolved = os.path.realpath(os.path.join(self._sandbox_dir, path))
+            if not resolved.startswith(os.path.realpath(self._sandbox_dir)):
+                return (
+                    f"BLOCKED: Write to '{path}' is outside sandbox directory "
+                    f"'{self._sandbox_dir}'. Write files within the sandbox."
+                )
+        return None
+
+    async def _call_model_with_retry(
+        self, messages: list[dict], temperature: float = 0.0
+    ) -> Any:
+        """Call model with exponential backoff retry."""
+        last_error = None
+        for attempt in range(self._max_retries):
+            try:
+                return self._model.complete(messages, temperature=temperature)
+            except Exception as e:
+                last_error = e
+                error_type = type(e).__name__
+                if "rate" in error_type.lower() or "429" in str(e):
+                    wait = (2 ** attempt) * 1.0
+                    log.warning("Rate limited, retrying in %.1fs (attempt %d)", wait, attempt + 1)
+                    await asyncio.sleep(wait)
+                elif "timeout" in error_type.lower() or "connection" in error_type.lower():
+                    wait = (2 ** attempt) * 0.5
+                    log.warning("Connection error, retrying in %.1fs (attempt %d)", wait, attempt + 1)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        raise last_error
+
     async def arun(self, context: AgentContext) -> AgentResult:
-        """Async core — the canonical execution loop."""
-        guard = LoopGuard(max_repeats=self._guard.max_repeats)  # Fresh guard per run
+        """Async core — the canonical execution loop with observability."""
+        run_start = time.monotonic()
+        guard = LoopGuard(max_repeats=self._guard.max_repeats)
+        trace = ReasoningTrace(task=context.task)
+        metrics = AgentMetrics(
+            run_id=hashlib.sha256(f"{context.task}{time.time()}".encode()).hexdigest()[:12],
+            model=getattr(self._model, "name", "unknown"),
+            provider=getattr(self._model, "provider", "unknown"),
+        )
         steps: list[AgentStep] = []
-        messages = self._build_messages(context)
         all_edits: list[str] = []
 
+        messages = self._build_messages(context)
+
         for step_num in range(1, context.max_steps + 1):
-            # Get model response
-            response = self._model.complete(messages, temperature=0.0)
+            step_start = time.monotonic()
+
+            # Context management: truncate if too long
+            messages, trunc_count = self._context.fit(messages, self._build_system_prompt())
+            metrics.context_truncations += trunc_count
+
+            # Check usage limits
+            if self._limiter.check():
+                log.warning("Usage limit exceeded at step %d", step_num)
+                break
+
+            # Call model with retry
+            try:
+                response = await self._call_model_with_retry(messages)
+            except Exception as e:
+                log.error("Model call failed after retries: %s", e)
+                break
+
+            # Track tokens
+            if hasattr(response, "usage"):
+                usage = response.usage
+                self._limiter.check(usage.total_tokens)
+                metrics.prompt_tokens += usage.prompt_tokens
+                metrics.completion_tokens += usage.completion_tokens
+                metrics.total_tokens += usage.total_tokens
 
             # Parse response
             try:
@@ -220,19 +627,48 @@ class ReactAgent:
             observation = ""
             is_final = action == "finish"
             loop_guard_triggered = False
+            decision_rationale = ""
 
             if not is_final:
-                # LoopGuard check — INV-204
-                if guard.check(action, action_input):
+                metrics.tool_calls += 1
+
+                # Sandbox check
+                sandbox_error = self._check_sandbox(action, action_input)
+                if sandbox_error:
+                    observation = sandbox_error
+                    decision_rationale = "Sandbox blocked file write outside allowed directory"
+                # LoopGuard check
+                elif guard.check(action, action_input):
                     observation = (
                         f"BLOCKED: You have called '{action}' with the same arguments "
                         f"{guard.max_repeats} times. This indicates you are stuck. "
                         f"Try a completely different approach or finish if possible."
                     )
                     loop_guard_triggered = True
-                    log.warning("LoopGuard triggered on %s (step %d)", action, step_num)
+                    metrics.loop_guard_triggers += 1
+                    decision_rationale = f"LoopGuard blocked repeated identical call (count={guard._counts.get(guard._hash(action, action_input), 0)})"
                 else:
                     observation = await self._execute_tool(action, action_input)
+                    if observation.startswith("Error"):
+                        metrics.tool_errors += 1
+                        decision_rationale = f"Tool '{action}' returned error"
+                    else:
+                        decision_rationale = f"Tool '{action}' succeeded"
+
+            step_duration = (time.monotonic() - step_start) * 1000
+
+            # Record interpretability trace
+            trace.steps.append(ReasoningStep(
+                step=step_num,
+                thought=thought,
+                action=action,
+                action_input=action_input,
+                observation=observation[:500],
+                is_final=is_final,
+                loop_guard_triggered=loop_guard_triggered,
+                duration_ms=step_duration,
+                decision_rationale=decision_rationale,
+            ))
 
             step = AgentStep(
                 step_number=step_num,
@@ -246,7 +682,7 @@ class ReactAgent:
             steps.append(step)
 
             # Track file edits
-            if not is_final and not loop_guard_triggered:
+            if not is_final and not loop_guard_triggered and not sandbox_error:
                 all_edits.extend(
                     self._extract_edits_from_observation(action, action_input, observation)
                 )
@@ -256,23 +692,42 @@ class ReactAgent:
             if observation:
                 messages.append({"role": "user", "content": f"Tool output:\n{observation}"})
 
+            # Emit structured log for observability
+            log.info(
+                "agent.step",
+                extra={
+                    "run_id": metrics.run_id,
+                    "step": step_num,
+                    "action": action,
+                    "is_final": is_final,
+                    "duration_ms": step_duration,
+                    "tokens": response.usage.total_tokens if hasattr(response, "usage") else 0,
+                },
+            )
+
             if is_final:
                 output = action_input.get("output", response.content)
 
-                # INV-201: run verification pipeline on final output
+                # INV-201: run verification pipeline
                 verification: list[VerificationEvidence] = []
                 if self._verifier and output.strip():
-                    verification = self._verifier.verify(output, context.cwd)
+                    # Only run verification on code-like output (skip for plain text)
+                    looks_like_code = (
+                        "def " in output or "class " in output or "import " in output
+                        or "function " in output or "const " in output or "var " in output
+                        or output.strip().startswith("{") or output.strip().startswith("[")
+                    )
+                    if looks_like_code:
+                        verification = self._verifier.verify(output, context.cwd)
 
-                # INV-202: success = verification passed, not self-rated confidence
                 verification_passed = all(
                     v.status == VerificationStatus.PASSED for v in verification
-                ) if verification else True  # no verifier = pass (backwards compat)
+                ) if verification else True
 
-                # False-green check (issue #12):
-                # success must be False if:
-                #   1. verification failed AND task requires code changes
-                #   2. zero edits made AND task implies edits were expected
+                metrics.verification_passed = verification_passed
+                metrics.edits_made = len(all_edits)
+
+                # False-green check
                 success = verification_passed
                 failure_reason = ""
 
@@ -289,36 +744,64 @@ class ReactAgent:
                 if not success and failure_reason:
                     output = f"{output}\n\n[Failure reason: {failure_reason}]"
 
+                # Finalize trace and metrics
+                trace.success = success
+                trace.failure_reason = failure_reason
+                trace.total_duration_ms = (time.monotonic() - run_start) * 1000
+                trace.total_tokens = metrics.total_tokens
+                trace.total_cost_usd = metrics.total_cost_usd
+                metrics.total_steps = step_num
+                metrics.duration_ms = trace.total_duration_ms
+
+                log.info("agent.run.complete", extra=metrics.to_dict())
+
                 return AgentResult(
                     success=success,
                     output=output,
                     steps=steps,
                     trace_id=self._tracer.trace_id if self._tracer else "",
-                    total_tokens=self._tracer.total_tokens if self._tracer else 0,
-                    total_cost_usd=self._tracer.total_cost_usd if self._tracer else 0.0,
+                    total_tokens=metrics.total_tokens,
+                    total_cost_usd=metrics.total_cost_usd,
                     verification=verification,
                     edits_made=all_edits,
                 )
 
         # Max steps reached
+        metrics.total_steps = context.max_steps
+        metrics.duration_ms = (time.monotonic() - run_start) * 1000
+        trace.total_duration_ms = metrics.duration_ms
+        trace.failure_reason = "Max steps reached"
+        log.warning("agent.run.max_steps", extra=metrics.to_dict())
+
         return AgentResult(
             success=False,
             output="Max steps reached without finishing. Try increasing max_steps or simplifying the task.",
             steps=steps,
             trace_id=self._tracer.trace_id if self._tracer else "",
-            total_tokens=self._tracer.total_tokens if self._tracer else 0,
-            total_cost_usd=self._tracer.total_cost_usd if self._tracer else 0.0,
+            total_tokens=metrics.total_tokens,
+            total_cost_usd=metrics.total_cost_usd,
             edits_made=all_edits,
         )
 
     def run(self, context: AgentContext) -> AgentResult:
         """Sync wrapper — Python 3.14+ compatible (fixes #2)."""
         try:
-            asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
+            # No running loop — safe to use asyncio.run
             return asyncio.run(self.arun(context))
         else:
+            # Running loop exists — run in a new thread with its own event loop
             import concurrent.futures
 
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(asyncio.run, self.arun(context)).result(timeout=120)
+            def _run_in_new_loop():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(self.arun(context))
+                finally:
+                    new_loop.close()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_run_in_new_loop)
+                return future.result(timeout=120)

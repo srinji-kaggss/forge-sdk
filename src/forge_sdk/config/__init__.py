@@ -56,8 +56,7 @@ class ForgeConfig:
         env_map = {
             "FORGE_PROVIDER": "provider",
             "FORGE_MODEL": "model",
-            "DEEPSEEK_API_KEY": "api_key",
-            "OPENROUTER_API_KEY": "api_key",
+            "FORGE_API_KEY": "api_key",
             "FORGE_BASE_URL": "base_url",
             "FORGE_TEMPERATURE": ("temperature", float),
             "FORGE_MAX_TOKENS": ("max_tokens", int),

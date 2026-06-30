@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import httpx
@@ -23,7 +24,8 @@ class OllamaProvider:
         self._model = model
         self._client = httpx.Client(timeout=120.0)
         # Ollama cloud uses the OpenAI-compatible endpoint
-        self._api_key = api_key
+        # Read from env if not explicitly provided (Bug #3 fix)
+        self._api_key = api_key or os.environ.get("OLLAMA_API_KEY", "")
 
     @property
     def name(self) -> str:

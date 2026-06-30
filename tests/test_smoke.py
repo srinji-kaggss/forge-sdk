@@ -132,7 +132,8 @@ def test_shell_echo():
 
 def test_shell_failure():
     async def _test():
-        result = await SHELL_TOOL.handler(command="exit 1")
+        # Use a real command that returns exit code 1 (not a shell builtin)
+        result = await SHELL_TOOL.handler(command="false")
         assert not result.success
         assert "Exit code 1" in result.error
 
@@ -141,7 +142,7 @@ def test_shell_failure():
 
 def test_shell_command_not_found():
     async def _test():
-        result = await SHELL_TOOL.handler(command="nonexistent_command_xyz 2>/dev/null || exit 127")
+        result = await SHELL_TOOL.handler(command="nonexistent_command_xyz_12345")
         assert not result.success
 
     asyncio.run(_test())
