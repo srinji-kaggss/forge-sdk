@@ -7,6 +7,7 @@ Sensitive paths (dotfiles, credentials) blocked on both read and write.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from forge_sdk.tools import ToolResult, ToolSpec
@@ -14,6 +15,25 @@ from forge_sdk.security import _check_path_safety
 
 # Max file size for reads (10MB)
 MAX_READ_BYTES = 10 * 1024 * 1024
+
+# Issue #21: LLMs writing a "small edit" to a large file sometimes rewrite
+# the whole file and elide the unchanged parts with a placeholder comment
+# instead of reproducing them, silently destroying the rest of the file
+# while still reporting success. Catch both symptoms before they hit disk.
+_ELISION_MARKERS = re.compile(
+    r"(remains?\s+(the\s+)?(same|identical|unchanged)"
+    r"|rest\s+of\s+(the\s+)?file\s+(remains|unchanged)"
+    r"|\.\.\.\s*\(?unchanged\)?"
+    r"|previous\s+(file\s+)?content\s+(remains|unchanged)"
+    r"|\[?\s*(rest|remainder)\s+of\s+(the\s+)?(file|code)\s*(omitted|elided)?\s*\]?\.\.\.)",
+    re.IGNORECASE,
+)
+
+# An existing file shrinking to less than this fraction of its prior size
+# without an explicit force=True is treated as a likely lazy-rewrite, not
+# an intentional edit.
+_SHRINK_RATIO_THRESHOLD = 0.5
+_SHRINK_MIN_OLD_BYTES = 200
 
 
 async def _read_file(path: str) -> ToolResult:
@@ -59,7 +79,7 @@ async def _read_file(path: str) -> ToolResult:
         return ToolResult(success=False, output="", error=str(e))
 
 
-async def _write_file(path: str, content: str) -> ToolResult:
+async def _write_file(path: str, content: str, force: bool = False) -> ToolResult:
     try:
         # L1+L5: Security check — write path safety
         violation = _check_path_safety(path, ".", check_writes=True)
@@ -68,6 +88,42 @@ async def _write_file(path: str, content: str) -> ToolResult:
                               metadata={"path": path, "blocked": True})
 
         p = Path(path).expanduser().resolve()
+
+        elision_match = _ELISION_MARKERS.search(content)
+        if elision_match and not force:
+            return ToolResult(
+                success=False,
+                output="",
+                error=(
+                    f"Refused: content contains an elision placeholder "
+                    f"({elision_match.group(0)!r}) instead of real file "
+                    f"content. This is a known lazy-rewrite failure mode — "
+                    f"write the FULL content or use a patch tool for partial "
+                    f"edits. Pass force=true only if this text is genuinely "
+                    f"intended."
+                ),
+                metadata={"path": str(p), "blocked": True, "reason": "elision_marker"},
+            )
+
+        if p.exists() and p.is_file() and not force:
+            old_len = p.stat().st_size
+            new_len = len(content.encode("utf-8"))
+            if old_len >= _SHRINK_MIN_OLD_BYTES and new_len < old_len * _SHRINK_RATIO_THRESHOLD:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=(
+                        f"Refused: new content ({new_len} bytes) is less than "
+                        f"{_SHRINK_RATIO_THRESHOLD:.0%} of the existing file's size "
+                        f"({old_len} bytes). This usually means a partial/lossy "
+                        f"rewrite rather than an intentional shrink. Use a patch "
+                        f"tool for a scoped edit, or pass force=true to write "
+                        f"this content anyway."
+                    ),
+                    metadata={"path": str(p), "blocked": True, "reason": "shrink_guard",
+                              "old_bytes": old_len, "new_bytes": new_len},
+                )
+
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return ToolResult(
@@ -170,6 +226,15 @@ FILE_TOOLS = [
                 "content": {
                     "type": "string",
                     "description": "The full content to write to the file",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true to bypass the lazy-rewrite guard (elision "
+                        "placeholder detection / large shrink-ratio check) "
+                        "when a drastic intentional rewrite is genuinely "
+                        "intended. Default false."
+                    ),
                 },
             },
             "required": ["path", "content"],

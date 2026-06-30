@@ -11,6 +11,7 @@ from typing import Any, Callable
 from forge_sdk.harness.profiles import AgentProfile
 from forge_sdk.harness.adaptive import AdaptivePrompt, PromptFragment
 from forge_sdk.harness.learning import LearningStore, Episode, Knowledge
+from forge_sdk.security import contain_untrusted_text
 
 
 @dataclass
@@ -186,11 +187,11 @@ class EvolutionEngine:
 
         for episode in failures:
             if episode.error:
-                # F1 fix: sanitize untrusted error text before processing
-                from forge_sdk.security import sanitize_untrusted_text
-                safe_error = sanitize_untrusted_text(episode.error, max_length=300)
-                # Simple categorization by error keyword
-                category = self._categorize_error(safe_error)
+                # Categorize on the contained excerpt (empty when
+                # quarantined) so injection payloads can't steer
+                # categorization either. See specs/SPEC-SECURITY-002.
+                contained = contain_untrusted_text(episode.error, max_excerpt=300)
+                category = self._categorize_error(contained.truncated_excerpt)
                 error_types.setdefault(category, []).append(episode)
             elif episode.lesson:
                 category = "lesson"
@@ -198,7 +199,7 @@ class EvolutionEngine:
 
         for category, episodes in error_types.items():
             if len(episodes) >= 2:  # Need at least 2 occurrences
-                suggestion = self._generate_suggestion(category, episodes)
+                suggestion = self._generate_suggestion(category)
                 patterns.append({
                     "topic": category,
                     "count": len(episodes),
@@ -225,7 +226,7 @@ class EvolutionEngine:
         else:
             return "general_errors"
 
-    def _generate_suggestion(self, category: str, episodes: list[Episode]) -> str:
+    def _generate_suggestion(self, category: str) -> str:
         """Generate a prompt suggestion for a failure pattern."""
         suggestions = {
             "timeout_handling": (
@@ -266,17 +267,14 @@ class EvolutionEngine:
             ),
         }
 
-        base_suggestion = suggestions.get(category, suggestions["general_errors"])
-
-        # Add specific context from episodes
-        if episodes:
-            error_messages = [e.error for e in episodes if e.error]
-            if error_messages:
-                base_suggestion += (
-                    f"\n\nSpecific errors to avoid: {error_messages[0]}"
-                )
-
-        return base_suggestion
+        # Per specs/SPEC-SECURITY-002 §4.2: this return value becomes
+        # PromptFragment.content, replayed verbatim into a future system
+        # prompt. It MUST contain only the closed-enum canned text above —
+        # no excerpt of episode.error, sanitized or not, is composed in.
+        # A sanitized excerpt is still attacker-influenced free text in a
+        # free-text slot; the fix is having no such slot at all, not a
+        # better sanitizer. See GH issue #25 / AUDIT-MATRIX-001 F1.
+        return suggestions.get(category, suggestions["general_errors"])
 
     def _build_summary(
         self,

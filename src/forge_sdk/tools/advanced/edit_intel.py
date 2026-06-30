@@ -36,6 +36,24 @@ def _make_diff(old: str, new: str, filename: str = "") -> str:
     return "".join(diff)
 
 
+def _syntax_error(file_path: str, new_content: str) -> str | None:
+    """Issue #22: every edit tool below mutates a file in place with no
+    integrity check on the result. Catch broken output (de-indentation,
+    dangling control flow, stale line numbers across a multi_edit/patch_line
+    sequence) BEFORE it hits disk, instead of relying on the agent to
+    remember to call a separate syntax_check tool. Returns an error string
+    if the edit would leave the file syntactically invalid, else None.
+    Non-Python files are not checked (nothing to parse against).
+    """
+    if not file_path.endswith(".py"):
+        return None
+    try:
+        ast.parse(new_content)
+    except SyntaxError as exc:
+        return f"line {exc.lineno}: {exc.msg} ({exc.text.strip() if exc.text else ''!r})"
+    return None
+
+
 async def patch_line(file_path: str, line_number: int, new_content: str) -> ToolResult:
     """Replace a specific line by line number (1-indexed)."""
     path = Path(file_path)
@@ -53,6 +71,15 @@ async def patch_line(file_path: str, line_number: int, new_content: str) -> Tool
         new = "\n".join(lines)
     else:
         new = "\n".join(lines) + "\n"
+
+    error = _syntax_error(file_path, new)
+    if error:
+        return ToolResult(
+            success=False,
+            output="",
+            error=f"Refused: patching line {line_number} would break syntax — {error}. File left unchanged.",
+            metadata={"path": file_path, "blocked": True, "reason": "syntax_check"},
+        )
 
     path.write_text(new)
     diff = _make_diff(old, new, file_path)
@@ -94,6 +121,15 @@ async def patch_symbol(file_path: str, symbol_name: str, new_body: str) -> ToolR
     if old.endswith("\n"):
         new += "\n"
 
+    error = _syntax_error(file_path, new)
+    if error:
+        return ToolResult(
+            success=False,
+            output="",
+            error=f"Refused: patching symbol '{symbol_name}' would break syntax — {error}. File left unchanged.",
+            metadata={"path": file_path, "blocked": True, "reason": "syntax_check"},
+        )
+
     path.write_text(new)
     diff = _make_diff(old, new, file_path)
     return ToolResult(success=True, output=f"Patched symbol '{symbol_name}' in {file_path}\n{diff}")
@@ -115,6 +151,15 @@ async def insert_at(file_path: str, after_line: int, content: str) -> ToolResult
     new = "\n".join(new_lines)
     if old.endswith("\n"):
         new += "\n"
+
+    error = _syntax_error(file_path, new)
+    if error:
+        return ToolResult(
+            success=False,
+            output="",
+            error=f"Refused: inserting after line {after_line} would break syntax — {error}. File left unchanged.",
+            metadata={"path": file_path, "blocked": True, "reason": "syntax_check"},
+        )
 
     path.write_text(new)
     diff = _make_diff(old, new, file_path)
@@ -158,19 +203,41 @@ async def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> ToolResult:
 
     old = path.read_text()
     results: list[str] = []
+    any_failed = False
 
     for edit in edits:
         etype = edit.get("type", "line")
         if etype == "line":
             r = await patch_line(file_path, edit["line_number"], edit["new_content"])
-            results.append(f"line {edit['line_number']}: {'OK' if r.success else r.output}")
+            results.append(f"line {edit['line_number']}: {'OK' if r.success else (r.error or r.output)}")
         elif etype == "symbol":
             r = await patch_symbol(file_path, edit["symbol_name"], edit["new_body"])
-            results.append(f"symbol {edit['symbol_name']}: {'OK' if r.success else r.output}")
+            results.append(f"symbol {edit['symbol_name']}: {'OK' if r.success else (r.error or r.output)}")
+        else:
+            r = ToolResult(success=False, output="", error=f"unknown edit type: {etype!r}")
+            results.append(f"{etype}: {r.error}")
+
+        if not r.success:
+            # Issue #22: each sub-edit reads/writes the file fresh, so a
+            # later edit's line/symbol target may be stale once an earlier
+            # one in this same call has shifted the file. Stop immediately
+            # on the first failure instead of applying the rest against a
+            # file state the agent never actually reasoned about, and never
+            # report overall success when a sub-edit was refused.
+            any_failed = True
+            break
 
     new = path.read_text()
     diff = _make_diff(old, new, file_path)
-    return ToolResult(success=True, output=f"Applied {len(edits)} edits to {file_path}\n{diff}")
+    summary = "\n".join(results)
+    if any_failed:
+        return ToolResult(
+            success=False,
+            output=f"Applied {len(results) - 1}/{len(edits)} edits to {file_path} before a sub-edit was refused:\n{summary}\n{diff}",
+            error=results[-1],
+            metadata={"path": file_path, "edits_applied": len(results) - 1, "edits_requested": len(edits)},
+        )
+    return ToolResult(success=True, output=f"Applied {len(edits)} edits to {file_path}\n{summary}\n{diff}")
 
 
 PATCH_LINE_TOOL = ToolSpec(

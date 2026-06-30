@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -130,6 +131,34 @@ def _is_sensitive_path(path: str, cwd: str = ".", check_writes: bool = False) ->
     return None
 
 
+def _temp_roots() -> tuple[Path, ...]:
+    """Issue #17: the OS scratch directory is a legitimate read/write target
+    for agent scratch work even when a project sandbox is active — an agent
+    that can't read back a file it just wrote can't verify its own work.
+    Resolve both the conventional /tmp and the platform tempfile module's
+    actual temp dir (on macOS these differ: /private/tmp vs /var/folders/.../T/).
+    """
+    import tempfile
+
+    roots = []
+    for candidate in ("/tmp", tempfile.gettempdir()):
+        try:
+            roots.append(Path(candidate).resolve())
+        except OSError:
+            continue
+    return tuple(roots)
+
+
+def _is_within_temp_dir(resolved: Path) -> bool:
+    for root in _temp_roots():
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _check_path_safety(
     path: str,
     cwd: str = ".",
@@ -158,6 +187,8 @@ def _check_path_safety(
         try:
             resolved.relative_to(sandbox_resolved)
         except ValueError:
+            if _is_within_temp_dir(resolved):
+                return None  # scratch dir is always allowed, even under a sandbox
             return f"BLOCKED: path '{path}' is outside sandbox '{sandbox_dir}'"
 
         # Check for symlink escape
@@ -166,7 +197,8 @@ def _check_path_safety(
             try:
                 target.relative_to(sandbox_resolved)
             except ValueError:
-                return f"BLOCKED: symlink '{path}' points outside sandbox"
+                if not _is_within_temp_dir(target):
+                    return f"BLOCKED: symlink '{path}' points outside sandbox"
 
     return None
 
@@ -222,31 +254,142 @@ _INJECTION_PATTERNS = [
 ]
 
 
-def sanitize_untrusted_text(text: str, max_length: int = 500) -> str:
-    """L4 APPLICATION: Sanitize untrusted text before it enters system prompts.
+# Unicode codepoint classes with no legitimate prose function, used as a
+# structural risk signal below. Ported from lgwks's
+# ~/logicalworks-/engine/membrane_sanitize.py (the daemon-side membrane
+# primitive for the same problem) rather than re-invented — see
+# specs/SPEC-SECURITY-002 §4.3. Not imported as a cross-repo dependency
+# (forge must not depend on lgwks); this is a small, self-contained port.
+def _classify_codepoint(ch: str) -> str | None:
+    o = ord(ch)
+    if 0xE0000 <= o <= 0xE007F:
+        return "TAG"  # Unicode tag chars (stego)
+    if 0xE000 <= o <= 0xF8FF or 0xF0000 <= o <= 0xFFFFD or 0x100000 <= o <= 0x10FFFD:
+        return "PUA"
+    if o in (0x200B, 0x200C, 0x200D, 0xFEFF, 0x2060):
+        return "ZWSP"  # zero-width
+    if 0x202A <= o <= 0x202E or 0x2066 <= o <= 0x2069:
+        return "BIDI"
+    import unicodedata
 
-    - Truncates to max_length to prevent context stuffing
-    - Strips injection patterns
-    - Escapes special tokens
-    - Wraps in clear delimiters marking it as untrusted
+    if unicodedata.category(ch) == "Mn":
+        return "COMBINING"  # zalgo if dense, legit accents if sparse
+    return None
+
+
+def _encoding_anomaly_ratio(text: str) -> float:
+    """Fraction of codepoints in suspicious classes (TAG/PUA/ZWSP/BIDI
+    unconditionally; dense COMBINING only) — same payload_ratio formula as
+    membrane_sanitize.py."""
+    if not text:
+        return 0.0
+    counts: dict[str, int] = {}
+    combining = 0
+    for ch in text:
+        cls = _classify_codepoint(ch)
+        if cls is None:
+            continue
+        counts[cls] = counts.get(cls, 0) + 1
+        if cls == "COMBINING":
+            combining += 1
+    n = max(1, len(text))
+    combining_ratio = combining / n
+    return sum(v for k, v in counts.items() if k != "COMBINING") / n + (
+        combining_ratio if combining_ratio > 0.05 else 0.0
+    )
+
+
+@dataclass(frozen=True)
+class ContainmentResult:
+    """The ONLY thing callers are allowed to compose into a prompt-
+    construction surface (a system prompt, PromptFragment.content, or any
+    text passed to a ModelPort). Per specs/SPEC-SECURITY-002 §4.2 — this
+    replaces sanitize_untrusted_text()'s string-returning contract, because
+    a string can be spliced anywhere (including back into a free-text slot,
+    which is exactly how GH issue #25 happened). category/risk_score/
+    quarantined are NOT attacker-controlled free text. raw_text and
+    truncated_excerpt ARE free text and must never reach a prompt surface —
+    only logs, CLI output, or other non-prompt contexts.
+    """
+
+    category: str
+    risk_score: float
+    quarantined: bool
+    raw_text: str
+    truncated_excerpt: str
+
+
+# Risk threshold above which text is quarantined outright (never even an
+# excerpt is considered safe to surface). Matches membrane_sanitize.py's
+# threshold for its analogous payload_ratio gate.
+_QUARANTINE_THRESHOLD = 0.02
+
+
+def contain_untrusted_text(
+    text: str, *, max_excerpt: int = 300, category: str = "unclassified"
+) -> ContainmentResult:
+    """L4 APPLICATION: the canonical containment primitive for untrusted
+    text crossing into a prompt-construction surface.
+
+    Per specs/SPEC-SECURITY-002 §1: a regex denylist on phrasing cannot work
+    in principle (infinite paraphrase/encoding/translation space — verified
+    against Willison, OpenAI's Instruction Hierarchy paper, and Anthropic's
+    own browser-agent injection research, all cited in that doc). This does
+    not try to detect "is this an injection" by content. It structurally
+    prevents free text from reaching a prompt at all: callers are expected
+    to compose `.category` (a closed enum) into a prompt, never
+    `.raw_text`/`.truncated_excerpt`. `_INJECTION_PATTERNS` / encoding-
+    anomaly detection here feed `risk_score` for logging/triage only — they
+    are not what makes this safe, the lack of a free-text slot is.
     """
     if not text:
-        return ""
+        return ContainmentResult(
+            category=category, risk_score=0.0, quarantined=False,
+            raw_text="", truncated_excerpt="",
+        )
 
-    # Truncate
-    truncated = text[:max_length]
-    if len(text) > max_length:
+    phrase_hits = sum(1 for pattern in _INJECTION_PATTERNS if pattern.search(text))
+    phrase_ratio = phrase_hits / len(_INJECTION_PATTERNS)
+    encoding_ratio = _encoding_anomaly_ratio(text)
+    length_anomaly = 1.0 if len(text) > 10_000 else 0.0
+    risk_score = min(1.0, max(phrase_ratio, encoding_ratio, length_anomaly * 0.5))
+    quarantined = risk_score >= _QUARANTINE_THRESHOLD or encoding_ratio >= _QUARANTINE_THRESHOLD
+
+    truncated = text[:max_excerpt]
+    if len(text) > max_excerpt:
         truncated += "...[truncated]"
-
-    # Strip injection patterns
     for pattern in _INJECTION_PATTERNS:
         truncated = pattern.sub("[REDACTED]", truncated)
-
-    # Escape special tokens
     truncated = truncated.replace("<", "&lt;").replace(">", "&gt;")
+    excerpt = "" if quarantined else f"[UNTRUSTED_DATA] {truncated} [/UNTRUSTED_DATA]"
 
-    # Wrap in untrusted delimiter
-    return f"[UNTRUSTED_DATA] {truncated} [/UNTRUSTED_DATA]"
+    return ContainmentResult(
+        category=category,
+        risk_score=risk_score,
+        quarantined=quarantined,
+        raw_text=text,
+        truncated_excerpt=excerpt,
+    )
+
+
+def sanitize_untrusted_text(text: str, max_length: int = 500) -> str:
+    """DEPRECATED — kept as a thin wrapper for the migration window
+    (specs/SPEC-SECURITY-002 §4.3). Its string-returning contract is the
+    bug class that produced GH issue #25 (a returned string can be spliced
+    anywhere, including back into a free-text slot). New call sites must
+    use contain_untrusted_text() and compose only its typed, non-free-text
+    fields into a prompt. This wrapper will be removed after the
+    deprecation window.
+    """
+    import warnings
+
+    warnings.warn(
+        "sanitize_untrusted_text() is deprecated; use contain_untrusted_text() "
+        "and compose only its typed fields into a prompt — see specs/SPEC-SECURITY-002",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return contain_untrusted_text(text, max_excerpt=max_length).truncated_excerpt
 
 
 def generate_uuid_id(prefix: str = "id") -> str:

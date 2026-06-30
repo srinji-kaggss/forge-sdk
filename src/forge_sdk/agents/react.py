@@ -23,10 +23,32 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from forge_sdk.agents.types import AgentContext, AgentResult, AgentStep
 from forge_sdk.verifiers import VerificationEvidence, VerificationStatus
+
+# Issue #23: AgentContext.cwd was recorded but never threaded into the
+# actual tool-call boundary -- every filesystem/shell/search/verify tool
+# resolves its own relative path/cwd argument against the PROCESS's real
+# os.getcwd(), not context.cwd, so cwd= was decorative. These tools accept
+# an optional path-ish parameter that defaults to "." (i.e. falls back to
+# process cwd when the LLM omits it); inject context.cwd there instead.
+_CWD_RELATIVE_KEYS = ("path", "file_path", "cwd")
+_CWD_DEFAULT_PARAM = {
+    "list_dir": "path",
+    "grep": "path",
+    "glob": "path",
+    "semantic_search": "path",
+    "symbol_search": "path",
+    "call_graph": "path",
+    "impact_analysis": "path",
+    "run_tests": "path",
+    "git_diff": "path",
+    "git_status": "path",
+    "shell": "cwd",
+}
 
 # Verbs that imply the task requires code/file changes
 _ACTION_VERBS = re.compile(
@@ -41,6 +63,20 @@ _ERROR_KEYWORDS = re.compile(
     r"\b(bug|error|vulnerability|security|critical|urgent|broken|failing|"
     r"crash|exception|stack.?trace|traceback|regression|issue|problem|"
     r"failure|fault|defect|weakness|exploit|injection|overflow)\b",
+    re.IGNORECASE,
+)
+
+# Issue #24: an explicit "don't touch files" instruction must override the
+# positive keyword heuristics above — an audit/research task that mentions
+# "bug" or "security" in its description is not an edit task just because
+# those words appear, if the task also says it's read-only.
+_READ_ONLY_MARKERS = re.compile(
+    r"\b(read.?only"
+    r"|do\s+not\s+(?:edit|modify|write|change|touch)"
+    r"|don'?t\s+(?:edit|modify|write|change|touch)"
+    r"|no\s+(?:file\s+)?(?:edits|changes|modifications)"
+    r"|without\s+(?:editing|modifying|writing|changing)"
+    r"|(?:report|summary|analysis|audit)\s+only)\b",
     re.IGNORECASE,
 )
 
@@ -395,6 +431,9 @@ class ReactAgent:
         max_cost_usd: float = 1.0,
         max_retries: int = 3,
         sandbox_dir: str | None = None,
+        verify_command: str | None = None,
+        auto_verify: bool = True,
+        verify_timeout_seconds: float = 120.0,
     ) -> None:
         self._model = model
         self._tools = tools
@@ -406,6 +445,15 @@ class ReactAgent:
         self._context = ContextManager(max_tokens=max_tokens)
         self._limiter = UsageLimiter(max_tokens=max_tokens * 10, max_cost_usd=max_cost_usd)
         self._sandbox_dir = sandbox_dir  # Restrict file writes to this directory
+        # Issue #20: a configurable build/test command that gates the
+        # terminal SUCCESS verdict. If not given explicitly, auto-detected
+        # by project type (Cargo.toml -> cargo build, edited .py files ->
+        # py_compile) when auto_verify is True. None means no gate is
+        # available for this project — SUCCESS is then NOT empirically
+        # verified and the result says so explicitly (see arun()).
+        self._verify_command = verify_command
+        self._auto_verify = auto_verify
+        self._verify_timeout_seconds = verify_timeout_seconds
 
     def _build_system_prompt(self) -> str:
         """AI-native system prompt with full tool schemas."""
@@ -471,7 +519,31 @@ class ReactAgent:
         log.debug("PARSE: no strategy matched, fallback to finish")
         return {"thought": content, "action": "finish", "action_input": {"output": content}}
 
-    async def _execute_tool(self, action: str, action_input: dict[str, Any]) -> str:
+    def _resolve_cwd(self, action: str, action_input: dict[str, Any], cwd: str) -> dict[str, Any]:
+        """Issue #23: scope every tool call to context.cwd at this single
+        dispatch choke point, instead of relying on each tool handler to
+        resolve paths correctly on its own (they don't — they resolve
+        against os.getcwd()).
+        """
+        if cwd in (".", "", None):
+            return action_input
+        base = Path(cwd).expanduser()
+        resolved = dict(action_input)
+
+        for key in _CWD_RELATIVE_KEYS:
+            value = resolved.get(key)
+            if isinstance(value, str) and value and not Path(value).expanduser().is_absolute():
+                resolved[key] = str((base / value).resolve())
+
+        default_param = _CWD_DEFAULT_PARAM.get(action)
+        if default_param and default_param not in resolved:
+            resolved[default_param] = str(base.resolve())
+
+        return resolved
+
+    async def _execute_tool(
+        self, action: str, action_input: dict[str, Any], context: AgentContext | None = None
+    ) -> str:
         """Execute a tool with retry and structured output."""
         tool = self._tools.get_by_name(action)
         if tool is None:
@@ -481,6 +553,8 @@ class ReactAgent:
                 f"Available tools: {available}. "
                 f"Use the exact tool name from the list."
             )
+        if context is not None:
+            action_input = self._resolve_cwd(action, action_input, context.cwd)
         try:
             result = await tool.handler(**action_input)
             return result.as_message
@@ -524,12 +598,85 @@ class ReactAgent:
         return edits
 
     def _task_implies_edits(self, task: str) -> bool:
-        """Heuristic: does the task prompt imply code/file changes are expected?"""
+        """Heuristic: does the task prompt imply code/file changes are expected?
+
+        Issue #24: explicit negation ("read-only", "do not edit") wins over
+        any positive keyword match — without this, an explicitly read-only
+        audit/research task gets a false success:false just because its
+        description happens to mention a word like "bug" or "security".
+        """
+        if _READ_ONLY_MARKERS.search(task):
+            return False
         if _ACTION_VERBS.search(task):
             return True
         if _ERROR_KEYWORDS.search(task):
             return True
         return False
+
+    def _detect_verify_command(self, cwd: str, edited_files: list[str]) -> str | None:
+        """Issue #20: pick a real build/test command for whatever project
+        type lives at cwd, so SUCCESS is never asserted on code nobody
+        compiled. Deliberately narrow — only the two cases this repo has
+        real evidence for (lgwks's Rust TUI work, forge's own Python code).
+        Returns None (no gate) rather than guessing a command that might not
+        exist; an absent gate is reported honestly, not silently assumed.
+        """
+        base = Path(cwd).expanduser()
+        if (base / "Cargo.toml").is_file():
+            return "cargo build --quiet"
+        if any(f.endswith(".py") for f in edited_files) and (
+            (base / "pyproject.toml").is_file() or (base / "setup.py").is_file()
+        ):
+            py_files = [f for f in edited_files if f.endswith(".py")]
+            quoted = " ".join(f'"{f}"' for f in py_files)
+            return f"python3 -m py_compile {quoted}"
+        return None
+
+    async def _run_verify_command(self, command: str, cwd: str) -> VerificationEvidence:
+        """Run the build/test command and turn its exit code into evidence.
+        A real subprocess run, not a heuristic — this is the actual gate
+        issue #20 asked for.
+        """
+        start = time.monotonic()
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=self._verify_timeout_seconds
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return VerificationEvidence(
+                    gate_name="build_verify",
+                    status=VerificationStatus.ERROR,
+                    message=f"Verify command timed out after {self._verify_timeout_seconds}s: {command}",
+                    duration_ms=(time.monotonic() - start) * 1000,
+                )
+            output = (stdout.decode(errors="replace") + stderr.decode(errors="replace"))[-2000:]
+            status = VerificationStatus.PASSED if proc.returncode == 0 else VerificationStatus.FAILED
+            return VerificationEvidence(
+                gate_name="build_verify",
+                status=status,
+                message=(
+                    f"`{command}` exited {proc.returncode}"
+                    + (f"\n{output}" if status is VerificationStatus.FAILED else "")
+                ),
+                details={"command": command, "returncode": proc.returncode},
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
+        except Exception as e:
+            return VerificationEvidence(
+                gate_name="build_verify",
+                status=VerificationStatus.ERROR,
+                message=f"Could not run verify command `{command}`: {type(e).__name__}: {e}",
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
 
     def _check_sandbox(self, action: str, action_input: dict) -> str | None:
         """F4 fix: Check ALL tools against sandbox, not just write_file.
@@ -724,7 +871,7 @@ class ReactAgent:
                     metrics.loop_guard_triggers += 1
                     decision_rationale = f"LoopGuard blocked repeated identical call (count={guard._counts.get(guard._hash(action, action_input), 0)})"
                 else:
-                    observation = await self._execute_tool(action, action_input)
+                    observation = await self._execute_tool(action, action_input, context)
                     if observation.startswith("Error"):
                         metrics.tool_errors += 1
                         decision_rationale = f"Tool '{action}' returned error"
@@ -829,6 +976,21 @@ class ReactAgent:
                     if looks_like_code:
                         verification = self._verifier.verify(output, context.cwd)
 
+                # Issue #20: the gates above only ever inspected the final
+                # message TEXT, never the actual files written to disk —
+                # a Rust file with a real compile error still passed every
+                # existing gate because nothing in the pipeline ran a build.
+                # Run the project's real build/test command against
+                # context.cwd whenever files were actually edited.
+                build_gate_ran = False
+                if all_edits:
+                    verify_cmd = self._verify_command
+                    if verify_cmd is None and self._auto_verify:
+                        verify_cmd = self._detect_verify_command(context.cwd, all_edits)
+                    if verify_cmd:
+                        build_gate_ran = True
+                        verification.append(await self._run_verify_command(verify_cmd, context.cwd))
+
                 verification_passed = all(
                     v.status == VerificationStatus.PASSED for v in verification
                 ) if verification else True
@@ -840,7 +1002,10 @@ class ReactAgent:
                 success = verification_passed
                 failure_reason = ""
 
-                if not verification_passed and self._task_implies_edits(context.task):
+                if not verification_passed and build_gate_ran:
+                    success = False
+                    failure_reason = "Build/verify command failed on the files written — see verification evidence."
+                elif not verification_passed and self._task_implies_edits(context.task):
                     success = False
                     failure_reason = "Verification failed for a task that requires code changes."
                 elif len(all_edits) == 0 and self._task_implies_edits(context.task):
@@ -848,6 +1013,16 @@ class ReactAgent:
                     failure_reason = (
                         "Agent completed without modifying any files. "
                         "Task implies code changes were expected."
+                    )
+                elif all_edits and not build_gate_ran:
+                    # Honest about the gap (CLAUDE.md: unknowns stay labeled
+                    # unknown) -- files changed but no build/test command was
+                    # available for this project type, so this SUCCESS was
+                    # never empirically verified against the files on disk.
+                    output = (
+                        f"{output}\n\n[Note: {len(all_edits)} file(s) changed but no build/verify "
+                        f"command was available for this project type — SUCCESS reflects the agent's "
+                        f"own report, not an empirical check.]"
                     )
 
                 if not success and failure_reason:
