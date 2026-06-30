@@ -1,0 +1,47 @@
+%% forge-sdk <-> lgwks integration & dedup map  (SPEC-SDK-002)
+%% Read this with SPEC-SDK-002-lgwks-integration.md.
+%% THESIS: lgwks already owns the substrate services (model law, event bus, context index,
+%% rules, isolation, retrieval). forge-sdk is the ASSEMBLED AGENTIC LOOP lgwks lacks.
+%% Every forge extension point becomes an ADAPTER over an lgwks canonical primitive — never a
+%% second copy (CLAUDE.md #3: one canonical implementation, kill duplicates).
+%% Legend:  ==>  runtime call/data   -..->  DEDUP: forge defers to lgwks' canonical primitive
+flowchart TB
+    subgraph CLI["lgwks CLI dispatcher (root 'lgwks' script, add_parser pattern)"]
+        FORGECMD["lgwks_forge.py :: add_parser(sub)\n→ 'lgwks forge run | eval | audit'"]
+    end
+
+    subgraph FORGE["forge-sdk — the agentic LOOP (what lgwks lacked)"]
+        REACT["ReactAgent\nplan→act→observe→verify"]
+        MPORT["ModelPort / ProviderRegistry"]
+        TOOLS["ToolRegistry\nshell · fs · search · worktree · research · navmap"]
+        TRACE["Tracer (spans)"]
+        AUDIT["AuditLog (hash-chain)"]
+        EVAL["Eval harness\nbenchmarks + metrics"]
+    end
+
+    subgraph LGWKS["lgwks — the SUBSTRATE (canonical primitives already built)"]
+        MESH["lgwks_model_mesh.py\nmodel_name_for_role(role,tier) = model LAW"]
+        BUS["daemon event bus\n'lgwks ops daemon emit/enqueue/packet'\ndaemon-events.db (append-only, training data)"]
+        WORK["daemon WORK_KINDS\nworktree_open/close · research_run"]
+        NAV["navmap (code atlas)\ncontext_indexer / retrieval"]
+        GOV["governance/laws\nrules_engine + refusal policy"]
+        AGENT["lgwks_agent.py (ISS-003)\nPLANNING half only — no real act loop"]
+    end
+
+    FORGECMD ==> REACT
+    REACT ==> MPORT
+    REACT ==> TOOLS
+    REACT ==> TRACE
+    REACT ==> EVAL
+
+    %% DEDUP seams — forge defers to lgwks canonical
+    MPORT -..->|"resolve model id from the LAW,\nstop hardcoding deepseek-v4-pro"| MESH
+    TRACE -..->|"emit each span as a daemon event\n(tool_call/model_output/transcript_turn)"| BUS
+    AUDIT -..->|"single append-only log = the bus;\ndon't keep a parallel .forge/audit.db"| BUS
+    TOOLS -..->|"worktree/research tools WRAP\nthe daemon WORK_KINDS"| WORK
+    TOOLS -..->|"context/search defers to navmap\nbefore raw grep (retrieve-before-edit)"| NAV
+    REACT -..->|"honor refusal policy / rules"| GOV
+    AGENT -..->|"lgwks 'agent' DELEGATES execution to\nReactAgent — kill the duplicate half-loop"| REACT
+
+    %% Strategic payoff
+    BUS ==>|"every agent run = typed trajectory"| AETHER["Standalone Aetherius\ntraining data (north star)"]
