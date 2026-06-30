@@ -1,190 +1,193 @@
-"""Smoke tests — verify all core components work."""
+"""Smoke tests for forge_v2 core components."""
 
-import asyncio
-from pathlib import Path
+import hashlib
+import json
+import time
 
-from forge_sdk.audit import AuditLog
-from forge_sdk.config import ForgeConfig
-from forge_sdk.eval.harness import default_extractor
-from forge_sdk.models.registry import registry
-from forge_sdk.models.types import ModelChunk, ModelResponse, Usage
-from forge_sdk.tools.filesystem import FILE_TOOLS
-from forge_sdk.tools.registry import ToolRegistry
-from forge_sdk.tools.search import SEARCH_TOOLS
-from forge_sdk.tools.shell import SHELL_TOOL
-from forge_sdk.tracing.span import SpanKind, SpanStatus
-from forge_sdk.tracing.tracer import Tracer
+from forge_v2.agent_loop.loop_guard import LoopGuard
+from forge_v2.agents.types import AgentResult, VerificationEvidence, VerificationStatus
+from forge_v2.memory import MemoryEntry, MemorySystem, MemoryTier
+from forge_v2.policy import PolicyDecision, PolicyKernel, RiskLevel, Permission, ToolLease
+from forge_v2.verifiers import VerificationConfig, Verifier
 
 
-def test_model_registry():
-    """Test provider registry."""
-    assert "deepseek" in registry.available()
-    assert "openrouter" in registry.available()
-    print("  [OK] Model registry")
+def test_loop_guard_basic():
+    guard = LoopGuard(max_repeats=3)
+    assert guard.check("read_file", {"path": "a.py"}) is False
+    assert guard.check("read_file", {"path": "a.py"}) is False
+    assert guard.check("read_file", {"path": "a.py"}) is False
+    assert guard.check("read_file", {"path": "a.py"}) is True  # blocked
+    assert guard.total_calls == 4
+    assert guard.unique_calls == 1
 
 
-def test_tool_registry():
-    """Test tool registry with filesystem tools."""
-    reg = ToolRegistry()
-    for tool in FILE_TOOLS + SEARCH_TOOLS + [SHELL_TOOL]:
-        reg.register(tool)
-    assert len(reg.all()) == 6
-    assert reg.get_by_name("read_file") is not None
-    assert reg.get_by_name("nonexistent") is None
-    schemas = reg.to_prompt_schemas()
-    assert len(schemas) == 6
-    print("  [OK] Tool registry")
+def test_loop_guard_different_calls():
+    guard = LoopGuard(max_repeats=2)
+    assert guard.check("read", {"path": "a"}) is False
+    assert guard.check("write", {"path": "b"}) is False
+    assert guard.check("read", {"path": "a"}) is False
+    assert guard.check("read", {"path": "a"}) is True  # 3rd repeat
+    assert guard.check("write", {"path": "b"}) is False  # only 2nd
+    assert guard.unique_calls == 2
 
 
-async def test_file_tools():
-    """Test file system tools."""
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Write
-        result = await FILE_TOOLS[1].handler(path=f"{tmpdir}/test.txt", content="hello world")
-        assert result.success, result.error
-
-        # Read
-        result = await FILE_TOOLS[0].handler(path=f"{tmpdir}/test.txt")
-        assert result.success
-        assert result.output == "hello world"
-
-        # List
-        result = await FILE_TOOLS[2].handler(path=tmpdir)
-        assert result.success
-        assert "test.txt" in result.output
-    print("  [OK] File tools")
+def test_loop_guard_reset():
+    guard = LoopGuard(max_repeats=2)
+    guard.check("x", {})
+    guard.check("x", {})
+    guard.reset()
+    assert guard.check("x", {}) is False  # reset worked
 
 
-async def test_shell_tool():
-    """Test shell tool."""
-    result = await SHELL_TOOL.handler(command="echo 'hello from shell'")
-    assert result.success
-    assert "hello from shell" in result.output
-    print("  [OK] Shell tool")
+def test_loop_guard_repeated_calls():
+    guard = LoopGuard(max_repeats=1)
+    guard.check("a", {})
+    guard.check("a", {})
+    guard.check("b", {})
+    repeated = guard.repeated_calls()
+    assert len(repeated) == 1
 
 
-def test_tracing():
-    """Test tracer and spans."""
-    tracer = Tracer()
-    assert tracer.trace_id
-    span = tracer.start_span("test", SpanKind.INTERNAL)
-    assert span.span_id
-    assert span.trace_id == tracer.trace_id
-    span.finish(SpanStatus.OK)
-    assert span.duration_ms is not None
-    assert span.duration_ms >= 0
+def test_verifier_syntax_pass():
+    v = Verifier()
+    code = "def hello():\n    return 'world'"
+    evidence = v.verify(code)
+    assert any(e.gate_name == "syntactic" and e.status == VerificationStatus.PASSED for e in evidence)
+    assert any(e.gate_name == "ast_parse" and e.status == VerificationStatus.PASSED for e in evidence)
 
-    # Convenience methods
-    llm_span = tracer.llm_call(
-        "test-model", "test", [{"role": "user", "content": "hi"}], "response"
+
+def test_verifier_syntax_fail():
+    v = Verifier()
+    code = "def hello(\n    return 'world'"
+    evidence = v.verify(code)
+    assert any(e.gate_name == "syntactic" and e.status == VerificationStatus.FAILED for e in evidence)
+
+
+def test_verifier_import_check():
+    v = Verifier()
+    code = "import os\nimport json\ndef f(): return os.path.join('a', 'b')"
+    evidence = v.verify(code)
+    assert any(e.gate_name == "import_check" and e.status == VerificationStatus.PASSED for e in evidence)
+
+
+def test_verifier_configurable():
+    config = VerificationConfig(enabled_gates=["syntactic"])
+    v = Verifier(config)
+    evidence = v.verify("x = 1")
+    assert len(evidence) == 1
+    assert evidence[0].gate_name == "syntactic"
+
+
+def test_policy_kernel_basic():
+    pk = PolicyKernel()
+    pk.register_tool_risk("read_file", RiskLevel.LOW)
+    pk.register_tool_risk("write_file", RiskLevel.MEDIUM)
+    pk.register_tool_risk("shell_exec", RiskLevel.HIGH)
+    pk.register_tool_risk("sudo", RiskLevel.CRITICAL)
+
+    d1 = pk.request_lease("read_file", (Permission.READ,))
+    assert d1.allowed is True
+
+    d2 = pk.request_lease("sudo", (Permission.EXEC,))
+    assert d2.allowed is False  # CRITICAL needs human gate
+
+
+def test_policy_kernel_deny():
+    pk = PolicyKernel()
+    pk.deny_tool("rm_rf")
+    d = pk.request_lease("rm_rf", (Permission.EXEC,))
+    assert d.allowed is False
+
+
+def test_policy_kernel_lease_expiry():
+    pk = PolicyKernel()
+    pk.register_tool_risk("fast_tool", RiskLevel.LOW)
+    pk.request_lease("fast_tool", (Permission.READ,), ttl_seconds=0.01)
+    time.sleep(0.02)
+    d = pk.check_lease("fast_tool")
+    assert d.allowed is False
+
+
+def test_policy_kernel_summary():
+    pk = PolicyKernel()
+    pk.register_tool_risk("a", RiskLevel.LOW)
+    pk.request_lease("a", (Permission.READ,))
+    s = pk.summary()
+    assert s["active_leases"] == 1
+
+
+def test_memory_working_tier():
+    mem = MemorySystem(":memory:")
+    mem.write("current task context", MemoryTier.WORKING)
+    results = mem.read(tier=MemoryTier.WORKING)
+    assert len(results) == 1
+    assert results[0].content == "current task context"
+    mem.close()
+
+
+def test_memory_episodic_tier():
+    mem = MemorySystem(":memory:")
+    mem.write("fixed bug in auth.py", MemoryTier.EPISODIC, source="auth.py")
+    results = mem.read(tier=MemoryTier.EPISODIC)
+    assert len(results) == 1
+    assert results[0].source == "auth.py"
+    mem.close()
+
+
+def test_memory_query():
+    mem = MemorySystem(":memory:")
+    mem.write("auth module uses JWT", MemoryTier.SEMANTIC)
+    mem.write("payment module uses Stripe", MemoryTier.SEMANTIC)
+    results = mem.read(query="JWT")
+    assert len(results) == 1
+    mem.close()
+
+
+def test_memory_count():
+    mem = MemorySystem(":memory:")
+    mem.write("a", MemoryTier.WORKING)
+    mem.write("b", MemoryTier.EPISODIC)
+    mem.write("c", MemoryTier.EPISODIC)
+    assert mem.count(MemoryTier.WORKING) == 1
+    assert mem.count(MemoryTier.EPISODIC) == 2
+    mem.close()
+
+
+def test_memory_invalidate():
+    mem = MemorySystem(":memory:")
+    entry = mem.write("temporary", MemoryTier.EPISODIC)
+    assert mem.invalidate(entry.entry_id) is True
+    assert mem.count(MemoryTier.EPISODIC) == 0
+    mem.close()
+
+
+def test_agent_result_verification_summary():
+    r = AgentResult(success=True, output="code", steps=[], trace_id="x")
+    assert r.verification_summary == "no verification run"
+
+    r2 = AgentResult(
+        success=True,
+        output="code",
+        steps=[],
+        trace_id="x",
+        verification=[
+            VerificationEvidence(gate_name="syn", status=VerificationStatus.PASSED),
+            VerificationEvidence(gate_name="ast", status=VerificationStatus.PASSED),
+        ],
     )
-    assert llm_span.kind == SpanKind.LLM
-    assert llm_span.attributes["gen_ai.system"] == "test"
-
-    tool_span = tracer.tool_call("test_tool", {"input": "x"}, "output", True)
-    assert tool_span.kind == SpanKind.TOOL
-
-    # Export
-    export_path = Path("/tmp/forge_test_traces.jsonl")
-    tracer.export_jsonl(export_path)
-    assert export_path.exists()
-    lines = export_path.read_text().strip().split("\n")
-    assert len(lines) == 3
-    export_path.unlink()
-    print("  [OK] Tracing")
+    assert r2.verification_passed is True
+    assert r2.verification_summary == "2/2 gates passed"
 
 
-def test_audit_log():
-    """Test audit log with hash-chain integrity."""
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-
-    audit = AuditLog(db_path)
-
-    # Append entries
-    audit.append("trace-1", "llm_call", {"model": "test", "tokens": 100})
-    audit.append("trace-1", "tool_use", {"tool": "read_file", "path": "/tmp/test"})
-    audit.append("trace-2", "eval_result", {"benchmark": "humaneval", "passed": True})
-
-    # Verify chain
-    violations = audit.verify_integrity()
-    assert len(violations) == 0, f"Unexpected violations: {violations}"
-
-    # Query
-    entries = audit.get_entries(trace_id="trace-1")
-    assert len(entries) == 2
-    entries = audit.get_entries(entry_type="eval_result")
-    assert len(entries) == 1
-
-    assert audit.count() == 3
-    audit.close()
-    Path(db_path).unlink()
-    print("  [OK] Audit log")
-
-
-def test_config():
-    """Test config loading."""
-    cfg = ForgeConfig()
-    assert cfg.provider == "deepseek"
-    assert cfg.model == "deepseek-v4-pro"
-    assert cfg.max_steps == 50
-    print("  [OK] Config")
-
-
-def test_code_extractor():
-    """Test code extraction strategies."""
-    response = """Here is the solution:
-
-```python
-def fibonacci(n):
-    if n <= 1:
-        return n
-    return fibonacci(n-1) + fibonacci(n-2)
-```
-
-This uses recursion."""
-
-    code = default_extractor.extract(response, "fibonacci")
-    assert "def fibonacci" in code
-    assert "fibonacci(n-1)" in code
-    print("  [OK] Code extractor")
-
-
-def test_model_response_types():
-    """Test model response types."""
-    resp = ModelResponse(
-        content="hello",
-        reasoning="thinking...",
-        model="test",
-        provider="test",
-        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+def test_agent_result_verification_fail():
+    r = AgentResult(
+        success=True,
+        output="code",
+        steps=[],
+        trace_id="x",
+        verification=[
+            VerificationEvidence(gate_name="syn", status=VerificationStatus.PASSED),
+            VerificationEvidence(gate_name="ast", status=VerificationStatus.FAILED),
+        ],
     )
-    assert resp.content == "hello"
-    assert resp.reasoning == "thinking..."
-    assert resp.usage.total_tokens == 15
-
-    chunk = ModelChunk(delta="hello", reasoning_delta="think")
-    assert chunk.delta == "hello"
-    print("  [OK] Model types")
-
-
-def main():
-    print("Running smoke tests...")
-    test_model_registry()
-    test_tool_registry()
-    asyncio.run(test_file_tools())
-    asyncio.run(test_shell_tool())
-    test_tracing()
-    test_audit_log()
-    test_config()
-    test_code_extractor()
-    test_model_response_types()
-    print("\nAll smoke tests passed!")
-
-
-if __name__ == "__main__":
-    main()
+    assert r.verification_passed is False
