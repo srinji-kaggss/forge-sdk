@@ -84,6 +84,24 @@ act-test-verify loop to forge's `ReactAgent` rather than maintaining its own hal
 Concretely: `lgwks forge run` is the canonical loop; `lgwks agent` either calls it or is documented as
 planning-only with `lgwks forge run` as the executor. No two parallel "do the task" code paths.
 
+### INV-107: Python is interim — keep a portable, edge-targetable core
+**End-state (Director, 2026-06-30):** the agent must eventually run **optimized for edge computing**;
+**Python is not the right long-term choice** (cf. Keel's own JS→Rust rewrite for the deterministic
+floor). Python forge-sdk is **v1 scaffolding** — fast to iterate, hardened *alongside* real-world use
+as issues surface — NOT the final runtime. To make the eventual native/Rust (edge) re-host cheap, the
+v1 MUST keep the core boundaries clean and the hot loop free of Python-only luxuries:
+- The four boundaries (`ModelPort`, `ToolRegistry`/`ToolSpec`, the event/audit sink, the eval harness)
+  MUST stay protocol-typed, serializable, and free of framework magic — they are the **portability
+  seams**; a Rust port reimplements behind the same contracts.
+- Tool I/O and event payloads MUST be plain JSON-serializable structures (no Python objects on the
+  wire) so the same contracts survive a language change.
+- Avoid Python-only deps in the hot path (the agent step loop, model call, tool dispatch); confine
+  conveniences to the CLI/dev layer. No dependency that has no native/Rust equivalent in the core.
+- Keep a `CORE-PORTABILITY.md` ledger: for each module, "edge-portable as-is | needs port | dev-only".
+This is a **direction**, not a v1 deliverable: do not rewrite in Rust now. Just don't author v1 in a
+way that traps the loop in CPython. Real edge constraints (binary size, cold-start, no-GC latency,
+WASM/embedded targets) will be specced when the v1 contracts are proven against real lgwks work.
+
 ## 3. Interfaces (adapters — concrete)
 
 ```python
