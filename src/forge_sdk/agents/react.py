@@ -91,6 +91,28 @@ _READ_ONLY_SCOPED_TAIL = re.compile(
     re.IGNORECASE,
 )
 
+# Partial-completion-over-claim mitigation (forge-sdk v0.5.2, see
+# blackbox2/PLAYBOOK-forge-fanout.md §9): a task naming N files to edit can
+# have an agent silently complete fewer than N and still report success,
+# because the zero-edits safety net above only fires when N == 0. This is a
+# DETECTION heuristic, not a hard gate — false positives are expected on
+# prompts that merely mention a file for read-only context, so it only ever
+# downgrades a SUCCESS to a flagged-for-review SUCCESS, never to a failure.
+_FILE_PATH_TOKEN = re.compile(r"\b[\w][\w./-]*\.[A-Za-z]{1,5}\b")
+_TARGET_EXCLUDE_CONTEXT = re.compile(
+    r"\b(do\s+not\s+(?:edit|modify|write|change|touch)|"
+    r"don'?t\s+(?:edit|modify|write|change|touch)|"
+    r"without\s+(?:editing|modifying|writing|changing|touching)|"
+    r"read(?:\s+only)?|reference|learn|peek\s+at|"
+    r"leave\s+(?:alone|untouched)|except|other\s+than|itself)\b",
+    re.IGNORECASE,
+)
+_TARGET_ACTION_CONTEXT = re.compile(
+    r"\b(create|add|write|new|implement|remove|delete|append|update|"
+    r"edit|modify|insert|change)\b",
+    re.IGNORECASE,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -642,6 +664,53 @@ class ReactAgent:
             return True
         return False
 
+    @staticmethod
+    def _named_edit_targets(task: str, window: int = 80) -> list[str]:
+        """Extract file paths the task names as edit targets (not read-only mentions).
+
+        For each file-path-shaped token, looks at the `window` characters
+        immediately before it — but never further back than the END of the
+        *previous* file-path mention. Without that floor, a verb already
+        spent on an earlier path ("Create tests/test_foo.py with a test for
+        foo.py") would wrongly re-attach to a later, unrelated mention of a
+        different file in the same sentence; restricting the window to
+        "since the last file mention" means a later path needs its OWN
+        verb in between to count.
+
+        If the nearest matching context in that window is an exclusion
+        phrase ("do not modify", "itself", "reference", ...), the mention is
+        read-only context and is skipped. If the nearest match is an action
+        verb ("create", "remove", "update", ...), it's a real target. No
+        match, or a tie, → skipped (conservative: a missed target is far
+        cheaper than a false-positive "you forgot a file").
+        """
+        targets: list[str] = []
+        prev_path_end = 0
+        for match in _FILE_PATH_TOKEN.finditer(task):
+            start = max(prev_path_end, match.start() - window)
+            preceding = task[start:match.start()]
+            exclude_matches = list(_TARGET_EXCLUDE_CONTEXT.finditer(preceding))
+            action_matches = list(_TARGET_ACTION_CONTEXT.finditer(preceding))
+            nearest_exclude = exclude_matches[-1].end() if exclude_matches else -1
+            nearest_action = action_matches[-1].end() if action_matches else -1
+            if nearest_action > nearest_exclude:
+                targets.append(match.group(0))
+            prev_path_end = match.end()
+        return targets
+
+    @classmethod
+    def _missing_named_targets(cls, task: str, all_edits: list[str]) -> list[str]:
+        """Named edit targets from the task with no matching entry in all_edits."""
+        edited_names = {Path(e).name.lower() for e in all_edits}
+        edited_full = {e.lower() for e in all_edits}
+        missing = []
+        for target in cls._named_edit_targets(task):
+            t_lower = target.lower()
+            if t_lower in edited_full or Path(target).name.lower() in edited_names:
+                continue
+            missing.append(target)
+        return missing
+
     def _detect_verify_command(self, cwd: str, edited_files: list[str]) -> str | None:
         """Issue #20: pick a real build/test command for whatever project
         type lives at cwd, so SUCCESS is never asserted on code nobody
@@ -1087,6 +1156,24 @@ class ReactAgent:
                 if not success and failure_reason:
                     output = f"{output}\n\n[Failure reason: {failure_reason}]"
 
+                # v0.5.2: partial-completion-over-claim detection. Only meaningful
+                # once ≥1 edit happened — the zero-edits gate above already covers
+                # the case where nothing was touched at all. Advisory only: this
+                # heuristic has known false positives (see _named_edit_targets
+                # docstring), so it flags a SUCCESS for human review instead of
+                # silently flipping it to a failure.
+                named_targets_missing: list[str] = []
+                if success and all_edits:
+                    named_targets_missing = self._missing_named_targets(context.task, all_edits)
+                    if named_targets_missing:
+                        output = (
+                            f"{output}\n\n[REVIEW FLAG: the task named these as edit targets "
+                            f"but no edit was recorded for them: {', '.join(named_targets_missing)}. "
+                            f"This may be a partial-completion-over-claim (see "
+                            f"blackbox2/PLAYBOOK-forge-fanout.md §9) — verify by hand before "
+                            f"trusting this SUCCESS.]"
+                        )
+
                 # Finalize trace and metrics
                 trace.success = success
                 trace.failure_reason = failure_reason
@@ -1107,6 +1194,7 @@ class ReactAgent:
                     total_cost_usd=metrics.total_cost_usd,
                     verification=verification,
                     edits_made=all_edits,
+                    named_targets_missing=named_targets_missing,
                 )
 
         # Max steps reached
