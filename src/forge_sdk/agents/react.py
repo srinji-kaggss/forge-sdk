@@ -444,12 +444,14 @@ class ReactAgent:
             f"{sandbox_note}\n"
             "## Rules\n\n"
             "- Always think before acting — explain your reasoning in 'thought'.\n"
-            "- Use tools to gather information before making changes.\n"
+            "- Read AT MOST 3 files before acting. Do not over-research.\n"
+            "- If the task requires writing a file, write it within your FIRST 5 steps.\n"
             "- If a tool fails, read the error message carefully and try a different approach.\n"
             "- Do NOT repeat the same tool call with the same arguments — it will be blocked.\n"
             "- When you have enough information, finish with a clear, complete output.\n"
             "- Keep responses concise — the output is consumed by other AI systems.\n"
             "- Use the EXACT tool name from the list above (not the id).\n"
+            "- Prefer ACTION over investigation. Write first, verify second.\n"
         )
 
     def _parse_response(self, content: str) -> dict[str, Any]:
@@ -582,7 +584,9 @@ class ReactAgent:
 
         # Convergence tracking: detect stalled agents
         steps_since_edit = 0
-        max_steps_without_edit = 5  # Force finish after 5 steps with no file changes
+        max_steps_without_edit = 5  # Nudge after 5 steps with no file changes
+        convergence_nudges = 0
+        max_nudges = 2  # Force finish after 2 ignored nudges
 
         messages = self._build_messages(context)
 
@@ -591,15 +595,30 @@ class ReactAgent:
 
             # Convergence check: force finish if agent is spinning
             if steps_since_edit >= max_steps_without_edit:
-                log.warning("Convergence: %d steps without edit, forcing finish", steps_since_edit)
-                # Inject a nudge into the conversation
+                convergence_nudges += 1
+                if convergence_nudges > max_nudges:
+                    log.warning("Convergence: %d nudges ignored, force-finishing", convergence_nudges - 1)
+                    break
+                log.warning("Convergence: %d steps without edit, nudging (nudge %d/%d)", steps_since_edit, convergence_nudges, max_nudges)
+                # Inject a stronger nudge into the conversation
+                nudge_msg = (
+                    f"URGENT: You have taken {steps_since_edit} steps without making any file changes. "
+                    f"This is nudge {convergence_nudges} of {max_nudges}. "
+                )
+                if convergence_nudges == 1:
+                    nudge_msg += (
+                        "STOP reading files. You have enough information. "
+                        "Write the output file NOW using write_file, then call finish. "
+                        "If you cannot write, call finish immediately with a summary of what you found."
+                    )
+                else:
+                    nudge_msg += (
+                        "FINAL WARNING. Call finish NOW with your best summary of findings. "
+                        "Do NOT attempt any more tool calls."
+                    )
                 messages.append({
                     "role": "user",
-                    "content": (
-                        "You have taken several steps without making any file changes. "
-                        "If the task requires code changes, write the file now. "
-                        "If the task is complete, call finish with a summary of what you did."
-                    ),
+                    "content": nudge_msg,
                 })
                 steps_since_edit = 0  # Reset after nudge
 
