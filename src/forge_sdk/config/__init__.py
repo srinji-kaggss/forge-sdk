@@ -81,11 +81,13 @@ class ForgeConfig:
         """Resolve API key from config or environment."""
         if self.api_key:
             return self.api_key
-        if self.provider == "deepseek":
-            return os.environ.get("DEEPSEEK_API_KEY", "")
-        if self.provider == "openrouter":
-            return os.environ.get("OPENROUTER_API_KEY", "")
-        return ""
+        env_keys = {
+            "deepseek": "DEEPSEEK_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "ollama": "OLLAMA_API_KEY",
+        }
+        env_var = env_keys.get(self.provider, "")
+        return os.environ.get(env_var, "") if env_var else ""
 
     def create_model(self) -> Any:
         """Create a model instance from config."""

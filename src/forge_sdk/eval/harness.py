@@ -39,18 +39,38 @@ class EvalResult:
 
 @dataclass
 class EvalReport:
-    """Aggregated eval results."""
+    """Aggregated eval results.
+
+    INV-202: reports resolution rate, never submission rate.
+    Resolution = the fix actually worked (test passed), not that the agent finished.
+    """
 
     benchmark: str
     total: int
-    passed: int
+    passed: int  # = resolved (INV-202)
     failed: int
     errors: int
-    pass_rate: float
+    resolution_rate: float  # INV-202: renamed from pass_rate
     avg_latency_ms: float
     total_tokens: int
     results: list[EvalResult]
     timestamp: float = field(default_factory=time.time)
+
+    @property
+    def pass_rate(self) -> float:
+        """Backwards compat alias — but resolution_rate is canonical."""
+        return self.resolution_rate
+
+    @property
+    def summary(self) -> str:
+        """One-line summary for AI consumption."""
+        return (
+            f"{self.benchmark}: {self.passed}/{self.total} resolved "
+            f"({self.resolution_rate:.1%}) | "
+            f"{self.failed} failed, {self.errors} errors | "
+            f"avg {self.avg_latency_ms:.0f}ms | "
+            f"{self.total_tokens} tokens"
+        )
 
 
 class CodeExtractor:
@@ -225,7 +245,7 @@ class EvalHarness:
             passed=passed,
             failed=failed,
             errors=errors,
-            pass_rate=passed / len(subset) if subset else 0.0,
+            resolution_rate=passed / len(subset) if subset else 0.0,  # INV-202
             avg_latency_ms=total_latency / len(subset) if subset else 0.0,
             total_tokens=total_tokens,
             results=results,

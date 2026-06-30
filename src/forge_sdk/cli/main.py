@@ -20,6 +20,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     from forge_sdk.tools.search import SEARCH_TOOLS
     from forge_sdk.tools.shell import SHELL_TOOL
     from forge_sdk.tracing.tracer import Tracer
+    from forge_sdk.verifiers import Verifier
 
     cfg = ForgeConfig.load(args.config)
     if args.provider:
@@ -34,8 +35,9 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     tracer = Tracer()
     audit = AuditLog(cfg.audit_db)
+    verifier = Verifier()
 
-    agent = ReactAgent(model=model, tools=tools, tracer=tracer, audit=audit)
+    agent = ReactAgent(model=model, tools=tools, tracer=tracer, audit=audit, verifier=verifier)
 
     context = AgentContext(
         task=args.task,
@@ -53,6 +55,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"Status: {'SUCCESS' if result.success else 'FAILED'}")
     print(f"Steps: {len(result.steps)}")
     print(f"Tokens: {result.total_tokens}")
+    if result.verification:
+        print(f"Verification: {result.verification_summary}")
+        for v in result.verification:
+            print(f"  {v.as_summary}")
     print(f"\nOutput:\n{result.output}")
 
     # Export traces
@@ -100,7 +106,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
     report = harness.run_benchmark(problems, benchmark_name=benchmark, limit=limit)
 
     print(f"\n{'=' * 60}")
-    print(f"Results: {report.passed}/{report.total} ({report.pass_rate:.1%})")
+    print(f"Resolved: {report.passed}/{report.total} ({report.resolution_rate:.1%})")
     print(f"Failed: {report.failed}, Errors: {report.errors}")
     print(f"Avg latency: {report.avg_latency_ms:.0f}ms")
     print(f"Total tokens: {report.total_tokens}")
@@ -116,7 +122,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
                 "passed": report.passed,
                 "failed": report.failed,
                 "errors": report.errors,
-                "pass_rate": report.pass_rate,
+                "resolution_rate": report.resolution_rate,
                 "avg_latency_ms": report.avg_latency_ms,
                 "total_tokens": report.total_tokens,
                 "timestamp": report.timestamp,
