@@ -13,10 +13,19 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 from forge_sdk.agents.types import AgentContext, AgentResult, AgentStep
 from forge_sdk.verifiers import VerificationEvidence, VerificationStatus
+
+# Verbs that imply the task requires code/file changes
+_ACTION_VERBS = re.compile(
+    r"\b(implement|fix|create|write|add|modify|update|build|refactor|"
+    r"patch|repair|construct|generate|develop|compose|insert|append|"
+    r"edit|change|convert|migrate|rewrite|set up|setup)\b",
+    re.IGNORECASE,
+)
 
 log = logging.getLogger(__name__)
 
@@ -131,11 +140,63 @@ class ReactAgent:
         messages.append({"role": "user", "content": context.task})
         return messages
 
+    def _extract_edits_from_observation(
+        self, action: str, action_input: dict, observation: str
+    ) -> list[str]:
+        """Extract file paths modified by a tool call from its observation."""
+        edits: list[str] = []
+        # Tools that write/create files
+        write_tools = {"write_file", "create_file"}
+        # Tools that could modify files via shell
+        shell_tools = {"shell", "run_command"}
+
+        if action in write_tools:
+            path = action_input.get("path", "")
+            if path:
+                edits.append(path)
+        elif action in shell_tools:
+            cmd = action_input.get("command", "")
+            # Common patterns that indicate file writes
+            write_patterns = [
+                r">\s*(\S+)",  # echo > file
+                r"tee\s+(\S+)",
+                r"cp\s+\S+\s+(\S+)",
+                r"mv\s+\S+\s+(\S+)",
+                r"mkdir\s+.*",
+                r"touch\s+(\S+)",
+                r"sed\s+.*\s*>\s*(\S+)",
+            ]
+            for pattern in write_patterns:
+                matches = re.findall(pattern, cmd)
+                edits.extend(matches)
+            # If the shell command succeeded and looks write-like, be conservative
+            # and trust the observation (don't false-positive on echo/ls)
+        elif action == "finish":
+            pass  # finish doesn't write files
+
+        return edits
+
+    def _task_implies_edits(self, task: str) -> bool:
+        """Heuristic: does the task prompt imply code/file changes are expected?"""
+        if _ACTION_VERBS.search(task):
+            return True
+        # Semantic analysis — flag zero-edit with error-related keywords
+        _ERROR_KEYWORDS = re.compile(
+            r"\b(bug|error|vulnerability|security|critical|urgent|broken|failing|"
+            r"crash|exception|stack.?trace|traceback|regression|issue|problem|"
+            r"failure|fault|defect|weakness|exploit|injection|overflow)\b",
+            re.IGNORECASE,
+        )
+        if _ERROR_KEYWORDS.search(task):
+            return True
+        return False
+
     async def arun(self, context: AgentContext) -> AgentResult:
         """Async core — the canonical execution loop."""
+        guard = LoopGuard(max_repeats=self._guard.max_repeats)  # Fresh guard per run
         steps: list[AgentStep] = []
         messages = self._build_messages(context)
-        self._guard.reset()
+        all_edits: list[str] = []
 
         for step_num in range(1, context.max_steps + 1):
             # Get model response
@@ -162,10 +223,10 @@ class ReactAgent:
 
             if not is_final:
                 # LoopGuard check — INV-204
-                if self._guard.check(action, action_input):
+                if guard.check(action, action_input):
                     observation = (
                         f"BLOCKED: You have called '{action}' with the same arguments "
-                        f"{self._guard.max_repeats} times. This indicates you are stuck. "
+                        f"{guard.max_repeats} times. This indicates you are stuck. "
                         f"Try a completely different approach or finish if possible."
                     )
                     loop_guard_triggered = True
@@ -183,6 +244,12 @@ class ReactAgent:
                 loop_guard_triggered=loop_guard_triggered,
             )
             steps.append(step)
+
+            # Track file edits
+            if not is_final and not loop_guard_triggered:
+                all_edits.extend(
+                    self._extract_edits_from_observation(action, action_input, observation)
+                )
 
             # Add to messages for next iteration
             messages.append({"role": "assistant", "content": response.content})
@@ -202,14 +269,35 @@ class ReactAgent:
                     v.status == VerificationStatus.PASSED for v in verification
                 ) if verification else True  # no verifier = pass (backwards compat)
 
+                # False-green check (issue #12):
+                # success must be False if:
+                #   1. verification failed AND task requires code changes
+                #   2. zero edits made AND task implies edits were expected
+                success = verification_passed
+                failure_reason = ""
+
+                if not verification_passed and self._task_implies_edits(context.task):
+                    success = False
+                    failure_reason = "Verification failed for a task that requires code changes."
+                elif len(all_edits) == 0 and self._task_implies_edits(context.task):
+                    success = False
+                    failure_reason = (
+                        "Agent completed without modifying any files. "
+                        "Task implies code changes were expected."
+                    )
+
+                if not success and failure_reason:
+                    output = f"{output}\n\n[Failure reason: {failure_reason}]"
+
                 return AgentResult(
-                    success=verification_passed,
+                    success=success,
                     output=output,
                     steps=steps,
                     trace_id=self._tracer.trace_id if self._tracer else "",
                     total_tokens=self._tracer.total_tokens if self._tracer else 0,
                     total_cost_usd=self._tracer.total_cost_usd if self._tracer else 0.0,
                     verification=verification,
+                    edits_made=all_edits,
                 )
 
         # Max steps reached
@@ -220,6 +308,7 @@ class ReactAgent:
             trace_id=self._tracer.trace_id if self._tracer else "",
             total_tokens=self._tracer.total_tokens if self._tracer else 0,
             total_cost_usd=self._tracer.total_cost_usd if self._tracer else 0.0,
+            edits_made=all_edits,
         )
 
     def run(self, context: AgentContext) -> AgentResult:

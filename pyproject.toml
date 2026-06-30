@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge-sdk"
-version = "0.2.0"
-description = "Agent-agnostic SDK for AI coding agents. Verification-first: LoopGuard, entity validation, resolution metrics. 100% HumanEval on 4B models."
+version = "0.3.0"
+description = "Agent-agnostic SDK for AI coding agents. lgwks integration: MeshModelPort, DaemonEventSink, SemanticCheck, tool adapters, false-green fix. 100% HumanEval on 4B models."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

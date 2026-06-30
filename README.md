@@ -31,20 +31,36 @@ forge eval --benchmark humaneval --limit 10
 forge audit --verify
 ```
 
+## v0.3.0 — lgwks Integration
+
+Forge is now the canonical agent loop for lgwks. New features:
+
+- **MeshModelPort** — Resolves model via `lgwks_model_mesh.model_name_for_role()` on every call
+- **DaemonEventSink** — Subprocess-isolated event bus bridging to lgwks daemon (crash-safe WAL)
+- **Tool Adapters** — lgwks native tools wrap as forge `ToolSpec` (shell sanitized via `shlex.split`)
+- **EvalBar** — Strategy registry for model evaluation
+- **SemanticCheck Verifier** — LLM-based semantic alignment check (INV-207)
+- **False-Green Fix** — `AgentResult.edits_made` tracks file changes; zero-edit runs flagged
+- **CLI Adapter** — `lgwks forge run|eval|audit` wires into lgwks dispatcher
+- **Adversarial Hardening** — 8 critical/high findings fixed (injection, event loss, TOCTOU)
+
 ## Architecture
 
 ```
 ModelPort (Protocol)
     ↓
-ProviderRegistry → Ollama Cloud | OpenRouter | DeepSeek | ...
+ProviderRegistry → Ollama Cloud | OpenRouter | DeepSeek | MeshModelPort | ...
     ↓
-Agent (ReactAgent | ...)
+Agent (ReactAgent)
+    ↓ LoopGuard + Entity Validation + SemanticCheck
     ↓
-ToolRegistry → FileSystem | Search | Shell | ...
+ToolRegistry → FileSystem | Search | Shell | LgwksAdapters | ...
     ↓
 Tracer (Spans → JSONL export)
     ↓
-AuditLog (SQLite, hash-chain integrity)
+AuditLog (SQLite, hash-chain) → EventSink → DaemonEventSink (lgwks)
+    ↓
+EvalBar → DefaultEvalStrategy | ... (pluggable)
 ```
 
 ## Design Principles
@@ -56,6 +72,8 @@ From the [OKF World-Class Coding Agent spec](https://github.com/srinji-kaggss/fo
 - **Trace-first observability**: Every LLM call produces a typed span
 - **Independent audit**: Append-only SQLite with hash-chain integrity
 - **Spec-driven**: Specifications before code
+- **Edge-portable**: All protocols are JSON-serializable, subprocess-isolated (INV-107)
+- **Verification-first**: LoopGuard, entity validation, semantic check (SPEC-SDK-003)
 
 ## Adding a Provider
 
@@ -67,6 +85,7 @@ from forge_sdk.models.ollama import OllamaProvider
 # - ollama (Ollama Cloud)
 # - openrouter (OpenRouter)
 # - deepseek (DeepSeek API)
+# - mesh (MeshModelPort via lgwks model mesh)
 ```
 
 ## Adding a Tool
@@ -75,18 +94,56 @@ from forge_sdk.models.ollama import OllamaProvider
 from forge_sdk.tools import ToolSpec, ToolResult
 from forge_sdk.tools.registry import ToolRegistry
 
-async def my_tool(input: str) -> ToolResult:
-    return ToolResult(success=True, output=f"Processed: {input}")
+def my_tool(args: dict) -> ToolResult:
+    return ToolResult(success=True, output=f"Processed: {args['input']}")
 
 tool = ToolSpec(
+    stable_id="TOOL-MY-001",
     name="my_tool",
     description="Does something useful",
-    input_schema={"type": "object", "properties": {"input": {"type": "string"}}},
-    output_schema={"type": "object", "properties": {"output": {"type": "string"}}},
-    stable_id="TOOL-MY-001",
+    parameters={"type": "object", "properties": {"input": {"type": "string"}}},
     handler=my_tool,
 )
 ```
+
+## lgwks Integration
+
+```python
+# Register lgwks tools with forge
+from forge_sdk.tools.adapters import register_lgwks_tools
+from forge_sdk.tools.registry import ToolRegistry
+
+registry = ToolRegistry()
+register_lgwks_tools(registry)  # wraps lgwks file/shell/search tools
+
+# Use MeshModelPort for lgwks model routing
+from forge_sdk.models.mesh import MeshModelPort
+model = MeshModelPort(role="agent", trust_class="deterministic")
+
+# Bridge events to lgwks daemon
+from forge_sdk.audit.daemon_sink import DaemonEventSink
+sink = DaemonEventSink(queue_name="forge")
+sink.submit({"event": "tool_call", "tool": "write_file", "path": "/tmp/test.py"})
+sink.flush()
+```
+
+## Portability
+
+See [CORE-PORTABILITY.md](CORE-PORTABILITY.md) for the full module classification:
+
+| Category | Count | Examples |
+|----------|-------|---------|
+| Edge-portable | 10 | ModelPort, ToolSpec, EventSink, Tracer, Config |
+| Needs-port | 11 | ReactAgent, ToolRegistry, Providers (httpx) |
+| Dev-only | 4 | CLI, EvalHarness, TestRunner |
+
+## Security
+
+See [ADVERSARIAL-REPORT.md](ADVERSARIAL-REPORT.md) for the full adversarial audit.
+
+- **CRITICAL**: DaemonEventSink input validation, SemanticCheck prompt sanitization, shell injection prevention
+- **HIGH**: Crash-safe event WAL, per-run LoopGuard, false-green semantic analysis, TOCTOU fixes
+- **CI**: GitHub Actions + Keel OKF pipeline (lint, typecheck, test, build, security audit)
 
 ## License
 

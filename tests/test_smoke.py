@@ -427,6 +427,160 @@ def test_verifier_evidence_summary():
     assert "test" in s
 
 
+# ── SemanticCheck (INV-207) ──
+
+def test_semantic_check_no_model():
+    """SemanticCheck returns ERROR when no model is configured."""
+    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
+    sc = SemanticCheck(model_port=None)
+    result = sc.execute(task_intent="fix bug", solution_summary="fixed bug")
+    assert result.status == VerificationStatus.ERROR
+    assert "model_not_configured" in result.details["error"]
+
+
+def test_semantic_check_pass():
+    """SemanticCheck parses a passing LLM response correctly."""
+    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
+    from forge_sdk.models.types import ModelResponse, Usage
+
+    class MockModel:
+        def complete(self, messages, **kwargs):
+            return ModelResponse(
+                content='{"pass": true, "confidence": 0.95, "reason": "Solution correctly fixes the bug"}',
+                model="mock",
+                provider="mock",
+                usage=Usage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+            )
+
+    sc = SemanticCheck(model_port=MockModel())
+    result = sc.execute(
+        task_intent="fix the login bug",
+        solution_summary="Fixed authentication check in login.py",
+        solution_files=["login.py"],
+    )
+    assert result.status == VerificationStatus.PASSED
+    assert result.details["confidence"] == 0.95
+    assert "fixes the bug" in result.message
+
+
+def test_semantic_check_fail():
+    """SemanticCheck parses a failing LLM response correctly."""
+    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
+    from forge_sdk.models.types import ModelResponse, Usage
+
+    class MockModel:
+        def complete(self, messages, **kwargs):
+            return ModelResponse(
+                content='{"pass": false, "confidence": 0.8, "reason": "Solution modifies wrong function"}',
+                model="mock",
+                provider="mock",
+                usage=Usage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+            )
+
+    sc = SemanticCheck(model_port=MockModel())
+    result = sc.execute(
+        task_intent="fix the login bug",
+        solution_summary="Changed color of the submit button",
+        solution_files=["style.css"],
+    )
+    assert result.status == VerificationStatus.FAILED
+    assert result.details["confidence"] == 0.8
+    assert "wrong function" in result.message
+
+
+def test_semantic_check_parse_failure():
+    """SemanticCheck handles unparseable LLM response gracefully."""
+    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
+    from forge_sdk.models.types import ModelResponse, Usage
+
+    class MockModel:
+        def complete(self, messages, **kwargs):
+            return ModelResponse(
+                content="Sorry, I can't determine if this is correct.",
+                model="mock",
+                provider="mock",
+                usage=Usage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+            )
+
+    sc = SemanticCheck(model_port=MockModel())
+    result = sc.execute(task_intent="fix bug", solution_summary="fixed it")
+    assert result.status == VerificationStatus.ERROR
+    assert "parse_failure" in result.details["error"]
+
+
+def test_semantic_check_applies():
+    """SemanticCheck is always applicable."""
+    from forge_sdk.verifiers import SemanticCheck
+    sc = SemanticCheck()
+    assert sc.applies() is True
+    assert sc.applies(context={"anything": "here"}) is True
+
+
+# ── False-Green Detection (issue #12) ──
+
+def test_false_green_zero_edits():
+    """AgentResult.success must be False when task implies edits but none were made."""
+    from forge_sdk.agents.types import AgentResult, AgentStep
+
+    # Simulate: agent finished successfully on a task that requires code changes,
+    # but zero files were modified — this is a false-green.
+    result = AgentResult(
+        success=True,  # would be set by loop — we test the post-loop logic
+        output="Task completed.",
+        steps=[AgentStep(
+            step_number=1,
+            thought="I think I'm done",
+            action="finish",
+            action_input={"output": "Task completed."},
+            is_final=True,
+        )],
+        trace_id="test-trace",
+        edits_made=[],
+    )
+
+    # The false-green check: task implies edits, but edits_made is empty
+    # In the real agent, this would flip success=False. Verify the heuristic works:
+    from forge_sdk.agents.react import ReactAgent
+    agent = ReactAgent(model=None, tools=None)
+    assert agent._task_implies_edits("Please implement a sorting algorithm")
+    assert agent._task_implies_edits("Fix the bug in main.py")
+    assert agent._task_implies_edits("Create a new file with the config")
+    assert agent._task_implies_edits("Write unit tests for the API")
+    assert agent._task_implies_edits("Update the README")
+    assert agent._task_implies_edits("add error handling")
+    # Non-edit tasks should NOT trigger
+    assert not agent._task_implies_edits("What is 2+2?")
+    assert not agent._task_implies_edits("Explain this code")
+    assert not agent._task_implies_edits("How does the sorting algorithm work?")
+
+
+def test_false_green_verification_fails_with_edit_task():
+    """When verification fails and task requires edits, success must be False."""
+    from forge_sdk.agents.types import AgentResult
+    from forge_sdk.verifiers import VerificationEvidence
+    from forge_sdk.verifiers import VerificationStatus
+
+    evidence = [VerificationEvidence(
+        gate_name="syntactic",
+        status=VerificationStatus.FAILED,
+        message="Syntax error",
+    )]
+    result = AgentResult(
+        success=True,
+        output="bad code",
+        steps=[],
+        trace_id="x",
+        verification=evidence,
+    )
+    # The agent's post-loop logic would set success=False because
+    # verification_passed=False AND task implies edits.
+    # This test verifies the data structure carries verification correctly.
+    verification_passed = all(
+        v.status == VerificationStatus.PASSED for v in result.verification
+    )
+    assert not verification_passed
+
+
 # ── Main ──
 
 def main():

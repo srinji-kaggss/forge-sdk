@@ -1,10 +1,19 @@
 """Model package — providers register themselves on import."""
 
+from forge_sdk.models.mesh import MeshModelPort
 from forge_sdk.models.port import ModelPort
 from forge_sdk.models.registry import ProviderRegistry, registry
 from forge_sdk.models.types import ModelChunk, ModelResponse, Usage
 
-__all__ = ["ModelPort", "ModelResponse", "ModelChunk", "Usage", "ProviderRegistry", "registry"]
+__all__ = [
+    "MeshModelPort",
+    "ModelPort",
+    "ModelResponse",
+    "ModelChunk",
+    "Usage",
+    "ProviderRegistry",
+    "registry",
+]
 
 
 def _auto_register() -> None:

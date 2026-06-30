@@ -57,6 +57,7 @@ class AgentResult:
     total_cost_usd: float = 0.0
     artifacts: dict[str, Any] = field(default_factory=dict)
     verification: list[Any] = field(default_factory=list)  # list[VerificationEvidence]
+    edits_made: list[str] = field(default_factory=list)  # file paths modified during run
 
     @property
     def verification_summary(self) -> str:
