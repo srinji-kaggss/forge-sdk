@@ -1,4 +1,9 @@
-"""Ollama Cloud provider — satisfies ModelPort protocol."""
+"""Ollama provider — satisfies ModelPort protocol.
+
+Supports both local Ollama (default) and Ollama Cloud.
+Local: OllamaProvider(model="gemma3:4b") — uses http://localhost:11434
+Cloud: OllamaProvider(model="gemma3:4b", base_url="https://ollama.com", api_key="...")
+"""
 
 from __future__ import annotations
 
@@ -12,12 +17,12 @@ from forge_sdk.models.types import ModelResponse, ModelChunk, Usage
 
 
 class OllamaProvider:
-    """Ollama Cloud API provider (ollama.com)."""
+    """Ollama API provider. Defaults to local Ollama server."""
 
     def __init__(
         self,
         api_key: str = "",
-        base_url: str = "https://ollama.com",
+        base_url: str = "http://localhost:11434",
         model: str = "gemma3:4b",
     ) -> None:
         self._base_url = base_url.rstrip("/")
