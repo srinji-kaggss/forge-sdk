@@ -4,16 +4,20 @@ Gates: syntactic → static → empirical (test/compile) → semantic → spec-c
 Result carries evidence[], not self-rated confidence.
 
 INV-203: distinct verifier — the model that writes code does NOT grade it.
+INV-207: semantic alignment verifier — catches shallow edits via LLM check.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+from forge_sdk.models.port import ModelPort
 
 
 class VerificationStatus(Enum):
@@ -52,6 +56,81 @@ class VerificationConfig:
         ]
     )
     timeout_seconds: float = 30.0
+
+
+class SemanticCheck:
+    """INV-207: Semantic alignment verifier.
+
+    Uses an LLM to check whether the solution semantically matches the task.
+    This catches "shallow edits" — syntactically valid but semantically wrong changes.
+
+    The check is simple: given task_intent and solution_summary, does the solution
+    actually address the task? Returns pass/fail with a confidence score.
+    """
+
+    STABLE_ID = "SEMANTIC-CHECK-001"
+
+    def __init__(self, model_port: ModelPort | None = None) -> None:
+        self._model = model_port
+
+    def applies(self, context: Any = None) -> bool:
+        """Always applicable — semantic check is universal."""
+        return True
+
+    def execute(
+        self,
+        task_intent: str,
+        solution_summary: str,
+        solution_files: list[str] | None = None,
+    ) -> VerificationEvidence:
+        """Run semantic alignment check via LLM.
+
+        Args:
+            task_intent: What the task asked for.
+            solution_summary: What the solution did (file changes, outputs).
+            solution_files: Optional list of file paths that were modified.
+
+        Returns:
+            VerificationEvidence with pass/fail and confidence.
+        """
+        if self._model is None:
+            return VerificationEvidence(
+                gate_name=self.STABLE_ID,
+                status=VerificationStatus.ERROR,
+                message="No model available for semantic check",
+                details={"error": "model_not_configured"},
+            )
+
+        prompt = (
+            "You are a code review verifier. Determine if the solution addresses the task.\n\n"
+            f"TASK: {task_intent}\n\n"
+            f"SOLUTION: {solution_summary}\n\n"
+            f"Files modified: {solution_files or 'unknown'}\n\n"
+            'Respond with ONLY a JSON object:\n'
+            '{"pass": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}'
+        )
+
+        response = self._model.complete(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=200,
+        )
+
+        try:
+            result = json.loads(response.content)
+            return VerificationEvidence(
+                gate_name=self.STABLE_ID,
+                status=VerificationStatus.PASSED if result.get("pass", False) else VerificationStatus.FAILED,
+                message=result.get("reason", ""),
+                details={"confidence": result.get("confidence", 0.0)},
+            )
+        except (json.JSONDecodeError, KeyError):
+            return VerificationEvidence(
+                gate_name=self.STABLE_ID,
+                status=VerificationStatus.ERROR,
+                message=f"Failed to parse semantic check response: {response.content[:200]}",
+                details={"error": "parse_failure", "raw": response.content[:500]},
+            )
 
 
 class Verifier:

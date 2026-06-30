@@ -1,4 +1,7 @@
-"""Audit log — independent observer with hash-chain integrity."""
+"""Audit log — independent observer with hash-chain integrity.
+
+Also exports EventSink (protocol) and DaemonEventSink (subprocess-isolated bridge).
+"""
 
 from __future__ import annotations
 
@@ -163,3 +166,8 @@ class AuditLog:
 
     def close(self) -> None:
         self._conn.close()
+
+
+# Re-export protocol and daemon bridge
+from forge_sdk.audit.daemon_sink import DaemonEventSink  # noqa: E402
+from forge_sdk.audit.eventsink import EventSink  # noqa: E402
