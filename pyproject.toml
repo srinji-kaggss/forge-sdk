@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge-sdk"
-version = "0.5.1"
-description = "Agent-agnostic SDK for AI coding agents. v0.5.1: defense-in-depth security hardening. 5-layer model: path containment, network egress block, dangerous command block, prompt injection sanitization, sensitive path allowlist."
+version = "0.5.2"
+description = "Agent-agnostic SDK for AI coding agents. v0.5.2: trust-gate hardening — closed a false-success bug (malformed model response misclassified as finish), a shell=True injection fallback, and a concurrent-run trace/audit cwd-scoping bug."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
