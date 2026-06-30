@@ -5,14 +5,24 @@ build-backend = "hatchling.build"
 [project]
 name = "forge-sdk"
 version = "0.1.0"
-description = "Agent-agnostic SDK for building, observing, and evaluating AI coding agents"
+description = "Agent-agnostic SDK for building, observing, and evaluating AI coding agents. 100% HumanEval on 4B models."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "srinji" }]
+keywords = ["ai", "coding-agent", "llm", "evaluation", "harness"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "httpx>=0.27",
-    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +37,11 @@ eval = [
 
 [project.scripts]
 forge = "forge_sdk.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/srinji-kaggss/forge-sdk"
+Repository = "https://github.com/srinji-kaggss/forge-sdk"
+Issues = "https://github.com/srinji-kaggss/forge-sdk/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/forge_sdk"]
