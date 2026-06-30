@@ -80,6 +80,17 @@ _READ_ONLY_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
+# A "don't touch/modify X" phrase that names a specific OTHER target right
+# after the verb ("any other file", "lgwks_redact.py itself", a filename) is
+# a SCOPED exclusion limiting where edits happen, not a blanket read-only
+# statement — a bounded edit task naming the files it must NOT touch should
+# not be misread as a read-only task. Checked against the text immediately
+# following a _READ_ONLY_MARKERS match.
+_READ_ONLY_SCOPED_TAIL = re.compile(
+    r"\s*(any\s+other\b|itself\b|it\b|[\w./-]*\.\w+)",
+    re.IGNORECASE,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -510,12 +521,24 @@ class ReactAgent:
         First successful strategy wins. Debug logging traces which strategy matched.
         """
         content = content.strip()
+        attempted = False
         for strategy in _PARSE_STRATEGIES:
             if strategy.applies(content):
+                attempted = True
                 result = strategy.execute(content)
                 if result is not None:
                     log.debug("PARSE: strategy=%s matched", strategy.id)
                     return result
+        if attempted:
+            # The content looked like a JSON action (had braces a strategy
+            # recognized) but none could extract a valid {"action": ...}
+            # object — e.g. "Tool: write_file\nArguments: {...}" prose
+            # instead of the required JSON. This is a malformed tool-call
+            # attempt, not a genuine finish: silently treating it as
+            # action="finish" reports false SUCCESS on a step where no tool
+            # ever ran. Surface it so the caller can retry/correct instead.
+            log.debug("PARSE: braces present but no strategy extracted a valid action")
+            return {"thought": content, "action": "__parse_failed__", "action_input": {"output": content}}
         log.debug("PARSE: no strategy matched, fallback to finish")
         return {"thought": content, "action": "finish", "action_input": {"output": content}}
 
@@ -604,9 +627,15 @@ class ReactAgent:
         any positive keyword match — without this, an explicitly read-only
         audit/research task gets a false success:false just because its
         description happens to mention a word like "bug" or "security".
+
+        A negation that names a specific other target right after the verb
+        ("don't touch any other file", "don't modify lgwks_redact.py itself")
+        is a scoped exclusion within an edit task, not a blanket read-only
+        statement — only an unscoped negation counts as genuinely read-only.
         """
-        if _READ_ONLY_MARKERS.search(task):
-            return False
+        for match in _READ_ONLY_MARKERS.finditer(task):
+            if not _READ_ONLY_SCOPED_TAIL.match(task, match.end()):
+                return False
         if _ACTION_VERBS.search(task):
             return True
         if _ERROR_KEYWORDS.search(task):
@@ -757,6 +786,8 @@ class ReactAgent:
         max_steps_without_edit = 5  # Nudge after 5 steps with no file changes
         convergence_nudges = 0
         max_nudges = 2  # Force finish after 2 ignored nudges
+        parse_failures = 0
+        max_parse_failures = 2  # Give up honestly after 2 unrecoverable bad formats
 
         messages = self._build_messages(context)
 
@@ -845,6 +876,34 @@ class ReactAgent:
             thought = parsed.get("thought", "")
             action = parsed.get("action", "finish")
             action_input = parsed.get("action_input", {})
+
+            if action == "__parse_failed__":
+                parse_failures += 1
+                if parse_failures > max_parse_failures:
+                    return AgentResult(
+                        success=False,
+                        output=(
+                            f"Model response could not be parsed as a valid tool call after "
+                            f"{parse_failures} attempts — refusing to report success on an "
+                            f"unparsed response. Last raw response:\n{thought[:1000]}"
+                        ),
+                        steps=steps,
+                        trace_id=self._tracer.trace_id if self._tracer else "",
+                        total_tokens=metrics.total_tokens,
+                        total_cost_usd=metrics.total_cost_usd,
+                        edits_made=all_edits,
+                    )
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Your last response could not be parsed. Respond with EXACTLY one JSON "
+                        'object: {"thought": "...", "action": "tool_name", "action_input": {...}}. '
+                        "Use the exact tool name, not free text like 'Tool: name'."
+                    ),
+                })
+                continue
+            parse_failures = 0
 
             # Execute tool if not finish
             observation = ""
