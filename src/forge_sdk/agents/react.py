@@ -580,10 +580,28 @@ class ReactAgent:
         steps: list[AgentStep] = []
         all_edits: list[str] = []
 
+        # Convergence tracking: detect stalled agents
+        steps_since_edit = 0
+        max_steps_without_edit = 5  # Force finish after 5 steps with no file changes
+
         messages = self._build_messages(context)
 
         for step_num in range(1, context.max_steps + 1):
             step_start = time.monotonic()
+
+            # Convergence check: force finish if agent is spinning
+            if steps_since_edit >= max_steps_without_edit:
+                log.warning("Convergence: %d steps without edit, forcing finish", steps_since_edit)
+                # Inject a nudge into the conversation
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You have taken several steps without making any file changes. "
+                        "If the task requires code changes, write the file now. "
+                        "If the task is complete, call finish with a summary of what you did."
+                    ),
+                })
+                steps_since_edit = 0  # Reset after nudge
 
             # Context management: truncate if too long
             messages, trunc_count = self._context.fit(messages, self._build_system_prompt())
@@ -608,6 +626,22 @@ class ReactAgent:
                 metrics.prompt_tokens += usage.prompt_tokens
                 metrics.completion_tokens += usage.completion_tokens
                 metrics.total_tokens += usage.total_tokens
+
+            # TRACER: emit LLM call span
+            if self._tracer:
+                self._tracer.llm_call(
+                    model=getattr(self._model, "name", "unknown"),
+                    provider=getattr(self._model, "provider", "unknown"),
+                    messages=messages[-2:],  # Last 2 messages for context
+                    response_content=response.content[:500],
+                    reasoning=getattr(response, "reasoning", None),
+                    usage={
+                        "gen_ai.usage.prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                        "gen_ai.usage.completion_tokens": getattr(usage, "completion_tokens", 0),
+                        "gen_ai.usage.total_tokens": getattr(usage, "total_tokens", 0),
+                    } if hasattr(response, "usage") else {},
+                    **({"step": step_num, "run_id": metrics.run_id}),
+                )
 
             # Parse response
             try:
@@ -655,7 +689,40 @@ class ReactAgent:
                     else:
                         decision_rationale = f"Tool '{action}' succeeded"
 
+                # TRACER: emit tool call span
+                if self._tracer:
+                    self._tracer.tool_call(
+                        tool_name=action,
+                        input_data=action_input,
+                        output=observation[:500],
+                        success=not observation.startswith("Error"),
+                        **{"step": step_num, "run_id": metrics.run_id},
+                    )
+
+                # AUDIT: emit tool execution entry
+                if self._audit:
+                    self._audit.append(
+                        entry_type="tool_call",
+                        trace_id=self._tracer.trace_id if self._tracer else metrics.run_id,
+                        payload={
+                            "tool": action,
+                            "input": action_input,
+                            "output_preview": observation[:200],
+                            "success": not observation.startswith("Error"),
+                            "step": step_num,
+                            "model": metrics.model,
+                        },
+                    )
+
             step_duration = (time.monotonic() - step_start) * 1000
+
+            # Convergence: track steps since last edit
+            if not is_final and not loop_guard_triggered:
+                new_edits = self._extract_edits_from_observation(action, action_input, observation)
+                if new_edits:
+                    steps_since_edit = 0
+                else:
+                    steps_since_edit += 1
 
             # Record interpretability trace
             trace.steps.append(ReasoningStep(
