@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge-sdk"
-version = "0.5.0"
-description = "Agent-agnostic SDK for AI coding agents. v0.5: world-class tool suite (27 tools), v5 harness, convergence hotfix. Markov puzzle paradigm — LLM reasons, tools do the lifting."
+version = "0.5.1"
+description = "Agent-agnostic SDK for AI coding agents. v0.5.1: defense-in-depth security hardening. 5-layer model: path containment, network egress block, dangerous command block, prompt injection sanitization, sensitive path allowlist."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

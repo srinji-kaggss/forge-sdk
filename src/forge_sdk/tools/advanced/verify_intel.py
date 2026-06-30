@@ -23,13 +23,29 @@ from pathlib import Path
 from typing import Any
 
 from forge_sdk.tools.types import ToolSpec, ToolResult
+from forge_sdk.security import _check_path_safety, _check_command_safety
+import shlex
 
 
 async def run_tests(path: str = ".", args: str = "-x --tb=short -q") -> ToolResult:
     """Run pytest and return structured results."""
-    cmd = f"python -m pytest {args} {path}"
-    proc = await asyncio.create_subprocess_shell(
-        cmd,
+    # RT-013 fix: sanitize path and args before execution
+    path_violation = _check_path_safety(path, ".", check_writes=False)
+    if path_violation:
+        return ToolResult(success=False, output="", error=path_violation,
+                          metadata={"blocked": True})
+
+    # Sanitize args — only allow known pytest flags
+    safe_args = args
+    cmd_violation = _check_command_safety(safe_args)
+    if cmd_violation:
+        return ToolResult(success=False, output="", error=f"Unsafe test args: {cmd_violation}",
+                          metadata={"blocked": True})
+
+    # Build command safely — no shell injection possible
+    cmd_parts = ["python", "-m", "pytest"] + shlex.split(safe_args) + [path]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd_parts,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

@@ -147,6 +147,13 @@ async def extract_document(file_path: str, max_chars: int = 10000) -> ToolResult
 
 async def semantic_search(query: str, path: str = ".", limit: int = 10) -> ToolResult:
     """Search files by semantic similarity (keyword overlap scoring, no API needed)."""
+    # L1: Path safety check
+    from forge_sdk.security import _check_path_safety
+    violation = _check_path_safety(path, ".", check_writes=False)
+    if violation:
+        return ToolResult(success=False, output="", error=violation,
+                          metadata={"blocked": True})
+
     root = Path(path)
     query_words = set(query.lower().split())
     results: list[dict[str, Any]] = []

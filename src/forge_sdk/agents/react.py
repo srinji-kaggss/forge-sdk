@@ -532,18 +532,41 @@ class ReactAgent:
         return False
 
     def _check_sandbox(self, action: str, action_input: dict) -> str | None:
-        """Check if file write is within sandbox. Returns error message or None."""
+        """F4 fix: Check ALL tools against sandbox, not just write_file.
+
+        L1 PERIMETER: every tool that touches the filesystem routes through
+        the centralized _check_path_safety() in forge_sdk.security.
+        """
         if not self._sandbox_dir:
             return None
-        if action in ("write_file", "create_file"):
-            path = action_input.get("path", "")
-            import os
-            resolved = os.path.realpath(os.path.join(self._sandbox_dir, path))
-            if not resolved.startswith(os.path.realpath(self._sandbox_dir)):
-                return (
-                    f"BLOCKED: Write to '{path}' is outside sandbox directory "
-                    f"'{self._sandbox_dir}'. Write files within the sandbox."
+
+        # Tools that touch the filesystem — ALL must be sandbox-checked
+        FILE_TOOLS = {
+            "write_file", "create_file", "read_file", "list_dir",
+            "patch_line", "patch_symbol", "insert_at", "rename_symbol",
+            "multi_edit", "code_structure",
+        }
+
+        if action in FILE_TOOLS:
+            path = action_input.get("path", "") or action_input.get("file_path", "")
+            if path:
+                from forge_sdk.security import _check_path_safety
+                check_writes = action in {"write_file", "create_file", "patch_line",
+                                          "patch_symbol", "insert_at", "multi_edit"}
+                violation = _check_path_safety(
+                    path, self._sandbox_dir, self._sandbox_dir, check_writes
                 )
+                if violation:
+                    return violation
+
+        # Shell tool — check cwd is within sandbox
+        if action == "shell":
+            cwd = action_input.get("cwd", ".")
+            from forge_sdk.security import _check_path_safety
+            violation = _check_path_safety(cwd, self._sandbox_dir, self._sandbox_dir)
+            if violation:
+                return violation
+
         return None
 
     async def _call_model_with_retry(

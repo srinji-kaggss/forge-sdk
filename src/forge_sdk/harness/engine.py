@@ -110,9 +110,10 @@ class EvolutionEngine:
                         })
                         fragments_added += 1
 
-                        # Record as knowledge
+                        # Record as knowledge — F6 fix: UUID not count-based
+                        from forge_sdk.security import generate_uuid_id
                         knowledge = Knowledge(
-                            id=f"know-{len(self._store.get_knowledge())}",
+                            id=generate_uuid_id("know"),
                             rule=pattern["suggestion"],
                             confidence=0.5,
                             domain=profile.domain,
@@ -185,8 +186,11 @@ class EvolutionEngine:
 
         for episode in failures:
             if episode.error:
+                # F1 fix: sanitize untrusted error text before processing
+                from forge_sdk.security import sanitize_untrusted_text
+                safe_error = sanitize_untrusted_text(episode.error, max_length=300)
                 # Simple categorization by error keyword
-                category = self._categorize_error(episode.error)
+                category = self._categorize_error(safe_error)
                 error_types.setdefault(category, []).append(episode)
             elif episode.lesson:
                 category = "lesson"

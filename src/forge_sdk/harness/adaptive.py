@@ -99,9 +99,15 @@ class AdaptivePrompt:
 
         parts = []
         for frag in sorted_fragments:
-            if frag.score < 0.2 and frag.source == "evolved":
-                # Skip low-performing evolved fragments
-                continue
+            if frag.source == "evolved":
+                # F2 fix: evidence gate — evolved fragments need N observations
+                # before first inclusion in compose()
+                from forge_sdk.security import check_fragment_evidence
+                if not check_fragment_evidence(frag.success_count, frag.failure_count, min_evidence=3):
+                    continue
+                if frag.score < 0.2:
+                    # Skip low-performing evolved fragments
+                    continue
             parts.append(frag.content)
 
         # Add context overrides

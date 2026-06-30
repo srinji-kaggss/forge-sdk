@@ -1,5 +1,6 @@
 """Code search tools — grep and glob.
 
+v0.5.1: Path safety via forge_sdk.security for sandbox containment.
 AI-native tool descriptions. grep uses ripgrep (rg) for fast regex search.
 glob uses Python's pathlib for pattern matching.
 """
@@ -10,10 +11,17 @@ import subprocess
 from pathlib import Path
 
 from forge_sdk.tools import ToolResult, ToolSpec
+from forge_sdk.security import _check_path_safety
 
 
 async def _grep(pattern: str, path: str = ".", include: str = "") -> ToolResult:
     try:
+        # L1: Path safety check
+        violation = _check_path_safety(path, ".", check_writes=False)
+        if violation:
+            return ToolResult(success=False, output="", error=violation,
+                              metadata={"blocked": True})
+
         cmd = ["rg", "--no-heading", "--line-number", "--color=never"]
         if include:
             cmd.extend(["--glob", include])
@@ -55,6 +63,12 @@ async def _grep(pattern: str, path: str = ".", include: str = "") -> ToolResult:
 
 async def _glob(pattern: str, path: str = ".") -> ToolResult:
     try:
+        # L1: Path safety check
+        violation = _check_path_safety(path, ".", check_writes=False)
+        if violation:
+            return ToolResult(success=False, output="", error=violation,
+                              metadata={"blocked": True})
+
         p = Path(path).expanduser().resolve()
         if not p.is_dir():
             return ToolResult(

@@ -1,6 +1,7 @@
 """Shell execution tool — runs commands in a subprocess.
 
-v0.4.0: Uses shell=False by default (shlex.split), audit logging, timeout validation.
+v0.5.1: Defense-in-depth security via forge_sdk.security module.
+No shell=True fallback. Allowlist-based path checking. Network egress blocked.
 """
 
 from __future__ import annotations
@@ -9,31 +10,13 @@ import shlex
 import subprocess
 
 from forge_sdk.tools import ToolResult, ToolSpec
-
-# Paths that commands must not read/write/execute on
-_SENSITIVE_PATHS = ("/etc/passwd", "/etc/shadow", "/etc/sudoers", "/root/", "/proc/", "/sys/")
-_DANGEROUS_CMDS = ("rm -rf", "dd ", "mkfs", ":(){ :|:& };:", "> /dev/sda")
-
-
-def _check_command_safety(command: str) -> str | None:
-    """Return error message if command is unsafe, else None."""
-    cmd_lower = command.lower()
-    # Block dangerous command patterns
-    for d in _DANGEROUS_CMDS:
-        if d in cmd_lower:
-            return f"BLOCKED: dangerous command pattern '{d}'"
-    # Block commands targeting sensitive files
-    for path in _SENSITIVE_PATHS:
-        if path in command:
-            return f"BLOCKED: command targets sensitive path '{path}'"
-    return None
+from forge_sdk.security import _check_command_safety, _check_path_safety
 
 
 async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
-    # Validate timeout
     timeout = min(max(timeout, 1), 300)
 
-    # Security check
+    # L2+L3: Security check via centralized layer
     violation = _check_command_safety(command)
     if violation:
         import logging
@@ -41,26 +24,32 @@ async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
         return ToolResult(success=False, output="", error=violation,
                           metadata={"command": command, "blocked": True})
 
-    # Audit log every command
+    # L1: Check cwd is not sensitive
+    cwd_violation = _check_path_safety(cwd, ".", check_writes=False)
+    if cwd_violation:
+        return ToolResult(success=False, output="", error=cwd_violation,
+                          metadata={"command": command, "blocked": True})
+
+    # Audit log
     import logging
     logging.getLogger("forge.tools.shell").warning("SHELL: %s (cwd=%s)", command, cwd)
 
-    # Try shell=False first (safer)
+    # Parse with shlex — NEVER fall back to shell=True
     try:
         args = shlex.split(command)
-        use_shell = False
-    except ValueError:
-        # Complex command — fall back to shell=True but warn
-        args = command
-        use_shell = True
-        logging.getLogger("forge.tools.shell").warning(
-            "SHELL: shlex.split failed, using shell=True for: %s", command[:100]
+    except ValueError as exc:
+        return ToolResult(
+            success=False,
+            output="",
+            error=f"Command parse failed (unbalanced quotes): {exc}. "
+                  f"Fix the quoting. shell=True fallback is disabled for security.",
+            metadata={"command": command, "blocked": True},
         )
 
     try:
         result = subprocess.run(
             args,
-            shell=use_shell,
+            shell=False,  # NEVER shell=True
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -103,7 +92,8 @@ async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
             output="",
             error=f"Command timed out after {timeout}s",
             metadata={
-                "suggestion": "Increase timeout, use a simpler command, or break the task into smaller steps",
+                "suggestion": "Increase timeout, use a simpler command, "
+                              "or break the task into smaller steps",
                 "timeout": timeout,
             },
         )
