@@ -74,7 +74,7 @@ class LgwksToolAdapter:
                 return ToolResult(
                     success=result.get("success", True),
                     output=result.get("output", str(result)),
-                    error=result.get("error"),
+                    error=str(result.get("error", "")),
                     metadata=result,
                 )
             except Exception as e:
@@ -98,7 +98,7 @@ class LgwksToolAdapter:
 def wrap_lgwks_file_tools() -> list[ToolSpec]:
     """Wrap lgwks file tools as forge ToolSpecs."""
     try:
-        from lgwks import files as lgwks_files
+        from lgwks import files as lgwks_files  # pyright: ignore[reportMissingImports]
     except ImportError:
         return []
 
@@ -163,7 +163,7 @@ def wrap_lgwks_file_tools() -> list[ToolSpec]:
 def wrap_lgwks_shell_tools() -> list[ToolSpec]:
     """Wrap lgwks shell tools as forge ToolSpecs."""
     try:
-        from lgwks import do as lgwks_do
+        from lgwks import do as lgwks_do  # pyright: ignore[reportMissingImports]
     except ImportError:
         return []
 
@@ -195,7 +195,7 @@ def wrap_lgwks_shell_tools() -> list[ToolSpec]:
 def wrap_lgwks_search_tools() -> list[ToolSpec]:
     """Wrap lgwks search tools as forge ToolSpecs."""
     try:
-        from lgwks import search as lgwks_search
+        from lgwks import search as lgwks_search  # pyright: ignore[reportMissingImports]
     except ImportError:
         return []
 

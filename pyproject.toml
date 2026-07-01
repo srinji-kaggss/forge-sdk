@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge-sdk"
-version = "0.6.1"
+version = "0.7.0"
 description = "Agent-agnostic SDK for AI coding agents. v0.6.0: INV-201 verification pipeline (syntactic→static→empirical→spec-conformance→semantic), held-out validation gate (RSEA-style), agent_fn wiring into v5 harness, named-target coverage detector + phantom-edit fix."
 readme = "README.md"
 license = "MIT"

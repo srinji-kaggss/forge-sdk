@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import os
 
-from google import genai
-from google.genai import types as genai_types
+from google import genai  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
+from google.genai import types as genai_types  # pyright: ignore[reportMissingImports]
 
 from forge_sdk.models.types import ModelChunk, ModelResponse, Usage
 

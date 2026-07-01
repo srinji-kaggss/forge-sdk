@@ -20,11 +20,16 @@ def _auto_register() -> None:
     """Try to register all known providers. Fail silently if deps missing."""
     from forge_sdk.models.deepseek import DeepSeekProvider
     from forge_sdk.models.openrouter import OpenRouterProvider
-    from forge_sdk.models.vertex import VertexProvider
 
     registry.register("deepseek", DeepSeekProvider)
     registry.register("openrouter", OpenRouterProvider)
-    registry.register("vertex", VertexProvider)
+
+    try:
+        from forge_sdk.models.vertex import VertexProvider
+
+        registry.register("vertex", VertexProvider)
+    except ImportError:
+        pass
 
     try:
         from forge_sdk.models.ollama import OllamaProvider

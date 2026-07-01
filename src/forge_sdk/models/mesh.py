@@ -99,7 +99,7 @@ class MeshModelPort:
     def _resolve_model(self) -> tuple[str, str]:
         """Return (provider_name, model_id) from the mesh, or from default."""
         try:
-            import lgwks_model_mesh
+            import lgwks_model_mesh  # pyright: ignore[reportMissingImports]
 
             raw = lgwks_model_mesh.model_name_for_role(
                 self._role, trust_class=self._trust_class, default=self._default

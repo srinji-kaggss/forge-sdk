@@ -106,6 +106,8 @@ class EvolutionEngine:
         # --- Gate setup: snapshot + pre-mutation evaluation ---
         gating_active = self._validation_gate is not None and validation_tasks is not None
         if gating_active:
+            assert self._validation_gate is not None
+            assert validation_tasks is not None
             score_before = self._validation_gate.evaluate(validation_tasks)
             self._validation_gate.set_baseline(score_before)
             snapshot = self._snapshot_state(prompt, self._store)
@@ -226,6 +228,8 @@ class EvolutionEngine:
         val_before = 0.0
         val_after = 0.0
         if gating_active:
+            assert self._validation_gate is not None
+            assert validation_tasks is not None
             score_after = self._validation_gate.evaluate(validation_tasks)
             val_before = score_before
             val_after = score_after
@@ -234,6 +238,7 @@ class EvolutionEngine:
                 StepResult(mutated=bool(mutations), summary="", mutations=mutations),
                 score_after,
             ):
+                assert snapshot is not None
                 self._restore_state(prompt, self._store, snapshot)
                 mutations = []
                 fragments_added = 0

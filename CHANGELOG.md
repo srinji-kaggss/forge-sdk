@@ -3,7 +3,51 @@
 All notable changes to forge-sdk are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
-## [Unreleased] — targeting 0.7.0
+## [0.7.0] — 2026-07-01
+
+### Added — Human Experience (L1-L5 layered architecture)
+
+**L5b: Session Recovery**
+- `forge run --resume <id>`, `--checkpoint-dir`, `--max-checkpoints`, `--list-sessions`
+- `SessionState` checkpoint save/restore to `~/.forge/checkpoints/` (JSON)
+
+**L5a: Permission Gate**
+- `forge run --permission-mode yolo|interactive|plan`
+- Strategy registry pattern (`PermissionGate` + `PermissionStrategy` protocol)
+- `ActionClassification` enum (SAFE, LOCAL_WRITE, DESTRUCTIVE, NETWORK_OUT, NETWORK_IN, EXEC, GIT_HISTORY)
+- Anti-slop hard gates (active in all modes): no-edit-without-read, must-add-test-for-fix, no-blind-snapshot, no-test-deletion-without-replacement
+
+**L4: Honest Termination**
+- 5 distinct break paths with truthful `failure_reason` (model-auth, context-exhausted, usage-limit, convergence, max-steps)
+- Previously: model-auth failures were caught, discarded, and reported as "Max steps reached"
+
+**L3: Typed Event Stream**
+- 11 event types: `RunStartEvent`, `ThoughtEvent`, `ActionEvent`, `ObservationEvent`, `TokenUsageEvent`, `VerificationEvent`, `FileEditEvent`, `StateUpdateEvent`, `DecisionEvent`, `RunEndEvent`, `RunErrorEvent`
+- `Renderer` protocol: `TextRenderer` (streaming ANSI) + `NDJSONRenderer` (machine pipe)
+- `forge run --output-format text|json|stream-json`
+- ADR-1: Single event stream consumed by all human/machine surfaces
+
+**L2: Moat Surface**
+- `--verify-command`, `--no-verify`, `--max-tokens`, `--max-cost`, `--sandbox`
+- `EVIDENCE_TYPE_MAP` (5-gate → 10-evidence taxonomy on `VerificationEvent`)
+- `change_manifest` on `RunEndEvent` for CI/CD pipeline consumption
+- Correlation keys (`trace_id`, `run_id`, `model`, `provider`) on every event
+
+**L1: Doctor**
+- `forge doctor` with L0-L5 escalation (env, config, install, connectivity, write, model)
+- `forge doctor --json` for machine consumption
+
+### Changed
+- CLI exit codes: 0=success, 1=run_error, 2=config, 3=model, 4=usage_limit, 5=max_steps
+- `failure_reason` field on `AgentResult` (INV-208)
+- ANSI styling helpers with `NO_COLOR` support, convenience wrappers
+- Guarded Vertex import (silent fallback when `google-genai` not installed)
+
+### Spec
+- 801-line `docs/FORGE-EXPERIENCE-SPEC.md`: topological map of every frontier CLI agent (Claude Code, OpenCode, Cline, Aider, Goose, Qwen Code, Codex CLI, Gemini CLI), gap analysis, layered L1-L5 architecture
+- 15 hardening amendments from 7 source packs: excellent_code_framework, human_like_corpus_model_os, ai_semantic_rag_pack, okf_dev_role_delta_pack-2, translation_harness_blueprint, debuggable_codebase_okf_2026
+
+## [Unreleased] — targeting 0.6.1 (now shipped as 0.7.0)
 
 Eight PRs open against `main`, none merged yet — this section documents what's
 pending Director review, not what's shipped. All found and fixed by dogfooding
