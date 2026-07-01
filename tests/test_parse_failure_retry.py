@@ -59,7 +59,7 @@ class _MalformedThenRecoversModel:
     def __init__(self):
         self._step = 0
 
-    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
         self._step += 1
         if self._step == 1:
             return ModelResponse(content=MALFORMED_TOOL_CALL)
@@ -83,7 +83,7 @@ class _AlwaysMalformedModel:
     max_output = 4096
     supports_reasoning = False
 
-    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
         return ModelResponse(content=MALFORMED_TOOL_CALL)
 
 

@@ -873,12 +873,45 @@ class ReactAgent:
 
         return None
 
-    async def _call_model_with_retry(self, messages: list[dict], temperature: float = 0.0) -> Any:
+    @staticmethod
+    def _finish_tool_schema() -> dict:
+        """`finish` is a sentinel action handled entirely in this file's
+        dispatch loop (see `is_final = action == "finish"` below), not a
+        registered ToolRegistry tool — so it needs its own synthetic
+        function declaration to be callable via native tool-calling.
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "description": (
+                    "Call this when the task is fully complete. Provide the final "
+                    "answer or a summary of what was accomplished."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "output": {
+                            "type": "string",
+                            "description": "Final answer or summary of what was accomplished",
+                        }
+                    },
+                    "required": ["output"],
+                },
+            },
+        }
+
+    def _tool_schemas(self) -> list[dict]:
+        return [*self._tools.to_prompt_schemas(), self._finish_tool_schema()]
+
+    async def _call_model_with_retry(
+        self, messages: list[dict], temperature: float = 0.0, tools: list[dict] | None = None
+    ) -> Any:
         """Call model with exponential backoff retry."""
         last_error = None
         for attempt in range(self._max_retries):
             try:
-                return self._model.complete(messages, temperature=temperature)
+                return self._model.complete(messages, temperature=temperature, tools=tools)
             except Exception as e:
                 last_error = e
                 error_type = type(e).__name__
@@ -1002,7 +1035,7 @@ class ReactAgent:
 
             # Call model with retry
             try:
-                response = await self._call_model_with_retry(messages)
+                response = await self._call_model_with_retry(messages, tools=self._tool_schemas())
             except Exception as e:
                 log.error("Model call failed after retries: %s", e)
                 break
@@ -1037,15 +1070,29 @@ class ReactAgent:
                     **({"step": step_num, "run_id": metrics.run_id}),
                 )
 
-            # Parse response
-            try:
-                parsed = self._parse_response(response.content)
-            except (json.JSONDecodeError, ValueError):
+            # Parse response. Prefer the provider's native tool call when
+            # present -- that JSON came from the provider's own constrained
+            # decoding, not free text this loop has to reverse-engineer, so
+            # none of _PARSE_STRATEGIES' failure modes (literal control
+            # chars, unescaped quotes, XML instead of JSON) are reachable.
+            # Fall back to text parsing only when the provider/model didn't
+            # return a tool call (e.g. no native tool-calling support).
+            if response.tool_calls:
+                call = response.tool_calls[0]
                 parsed = {
-                    "thought": response.content,
-                    "action": "finish",
-                    "action_input": {"output": response.content},
+                    "thought": response.content or f"(tool call: {call['name']})",
+                    "action": call["name"],
+                    "action_input": call["arguments"],
                 }
+            else:
+                try:
+                    parsed = self._parse_response(response.content)
+                except (json.JSONDecodeError, ValueError):
+                    parsed = {
+                        "thought": response.content,
+                        "action": "finish",
+                        "action_input": {"output": response.content},
+                    }
 
             thought = parsed.get("thought", "")
             action = parsed.get("action", "finish")
