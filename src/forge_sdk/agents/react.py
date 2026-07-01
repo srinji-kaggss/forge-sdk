@@ -617,7 +617,21 @@ class ReactAgent:
     def _extract_edits_from_observation(
         self, action: str, action_input: dict, observation: str
     ) -> list[str]:
-        """Extract file paths modified by a tool call from its observation."""
+        """Extract file paths modified by a tool call from its observation.
+
+        Found via a live probe (v0.5.2 follow-up): a blocked/failed shell
+        command (e.g. curl killed by the L2 network-egress block) still got
+        scanned for write-patterns, and its stderr redirect ("2>/dev/null")
+        matched the bare `>` pattern as if it were a real file write —
+        producing a phantom "1 file(s) changed" for a command that never
+        ran. `ToolResult.as_message` always prefixes a failure with
+        "Tool failed: " (tools/types.py), so that's the one reliable signal
+        that nothing on disk actually changed, regardless of what the
+        attempted command string looks like.
+        """
+        if observation.startswith("Tool failed:"):
+            return []
+
         edits: list[str] = []
         write_tools = {"write_file", "create_file"}
         shell_tools = {"shell", "run_command"}
@@ -629,7 +643,7 @@ class ReactAgent:
         elif action in shell_tools:
             cmd = action_input.get("command", "")
             write_patterns = [
-                r">\s*(\S+)",
+                r"(?<!\d)>\s*(\S+)",  # exclude N> (e.g. 2>) fd redirects
                 r"tee\s+(\S+)",
                 r"cp\s+\S+\s+(\S+)",
                 r"mv\s+\S+\s+(\S+)",
@@ -639,7 +653,7 @@ class ReactAgent:
             ]
             for pattern in write_patterns:
                 matches = re.findall(pattern, cmd)
-                edits.extend(matches)
+                edits.extend(m for m in matches if m != "/dev/null")
         return edits
 
     def _task_implies_edits(self, task: str) -> bool:
