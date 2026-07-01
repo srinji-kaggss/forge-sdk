@@ -169,5 +169,5 @@ class AuditLog:
 
 
 # Re-export protocol and daemon bridge
-from forge_sdk.audit.daemon_sink import DaemonEventSink  # noqa: E402
-from forge_sdk.audit.eventsink import EventSink  # noqa: E402
+from forge_sdk.audit.daemon_sink import DaemonEventSink as DaemonEventSink  # noqa: E402
+from forge_sdk.audit.eventsink import EventSink as EventSink  # noqa: E402

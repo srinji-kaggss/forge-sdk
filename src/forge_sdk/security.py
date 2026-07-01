@@ -106,8 +106,6 @@ def _is_sensitive_path(path: str, cwd: str = ".", check_writes: bool = False) ->
     """
     resolved = _resolve_path(path, cwd)
     path_str = str(resolved)
-    home = str(Path.home())
-
     # Check against sensitive paths — use prefix matching for absolute paths
     sensitive_list = SENSITIVE_WRITE_PATHS if check_writes else SENSITIVE_READ_PATHS
     for sensitive in sensitive_list:

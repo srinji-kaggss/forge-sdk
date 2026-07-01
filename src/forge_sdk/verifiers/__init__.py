@@ -120,9 +120,8 @@ def spec_conformance_check(
     missing = []
     for f in sorted(task_files):
         fl = f.lower()
-        if fl not in edited_lower and Path(fl).name.lower() not in edited_names:
-            if fl not in output_lower:
-                missing.append(f)
+        if fl not in edited_lower and Path(fl).name.lower() not in edited_names and fl not in output_lower:
+            missing.append(f)
 
     if missing:
         return VerificationEvidence(

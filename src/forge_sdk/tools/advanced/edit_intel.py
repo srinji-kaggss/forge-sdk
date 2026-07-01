@@ -65,11 +65,7 @@ async def patch_line(file_path: str, line_number: int, new_content: str) -> Tool
         return ToolResult(success=False, output=f"Error: line {line_number} out of range (1-{len(lines)})")
 
     lines[line_number - 1] = new_content
-    new = "\n".join(lines)
-    if not old.endswith("\n"):
-        new = "\n".join(lines)
-    else:
-        new = "\n".join(lines) + "\n"
+    new = "\n".join(lines) if not old.endswith("\n") else "\n".join(lines) + "\n"
 
     error = _syntax_error(file_path, new)
     if error:
@@ -101,10 +97,9 @@ async def patch_symbol(file_path: str, symbol_name: str, new_body: str) -> ToolR
 
     target_node = None
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if node.name == symbol_name:
-                target_node = node
-                break
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == symbol_name:
+            target_node = node
+            break
 
     if target_node is None:
         return ToolResult(success=False, output=f"Error: symbol '{symbol_name}' not found in {file_path}")
@@ -113,7 +108,7 @@ async def patch_symbol(file_path: str, symbol_name: str, new_body: str) -> ToolR
     end = target_node.end_lineno or len(lines)
 
     indent = len(lines[start]) - len(lines[start].lstrip())
-    indented_new = "\n".join(" " * indent + l if l.strip() else l for l in new_body.splitlines())
+    indented_new = "\n".join(" " * indent + line if line.strip() else line for line in new_body.splitlines())
 
     new_lines = lines[:start] + indented_new.splitlines() + lines[end:]
     new = "\n".join(new_lines)
@@ -180,10 +175,9 @@ async def rename_symbol(file_path: str, old_name: str, new_name: str) -> ToolRes
 
     found = False
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if node.name == old_name:
-                node.name = new_name
-                found = True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == old_name:
+            node.name = new_name
+            found = True
 
     if not found:
         return ToolResult(success=False, output=f"Error: '{old_name}' not found in {file_path}")

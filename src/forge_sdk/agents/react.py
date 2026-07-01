@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import time
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -164,9 +165,6 @@ log = logging.getLogger(__name__)
 
 # --- Parse strategies (OKF S3-safe: strategy registry, no if/elif chains) ---
 # Each strategy has: id (stable), applies(content) -> bool, execute(content) -> dict|None
-
-from abc import ABC, abstractmethod
-
 
 class ParseStrategy(ABC):
     """Base class for parse strategies. Stable ID + applies/execute contract."""
@@ -689,9 +687,7 @@ class ReactAgent:
                 return False
         if _ACTION_VERBS.search(task):
             return True
-        if _ERROR_KEYWORDS.search(task):
-            return True
-        return False
+        return bool(_ERROR_KEYWORDS.search(task))
 
     @staticmethod
     def _nearest_context(text: str) -> tuple[int, int]:
@@ -803,13 +799,13 @@ class ReactAgent:
             return None
 
         # Tools that touch the filesystem — ALL must be sandbox-checked
-        FILE_TOOLS = {
+        _file_tools = {
             "write_file", "create_file", "read_file", "list_dir",
             "patch_line", "patch_symbol", "insert_at", "rename_symbol",
             "multi_edit", "code_structure",
         }
 
-        if action in FILE_TOOLS:
+        if action in _file_tools:
             path = action_input.get("path", "") or action_input.get("file_path", "")
             if path:
                 from forge_sdk.security import _check_path_safety
@@ -1268,7 +1264,7 @@ class ReactAgent:
     def run(self, context: AgentContext) -> AgentResult:
         """Sync wrapper — Python 3.14+ compatible (fixes #2)."""
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             # No running loop — safe to use asyncio.run
             return asyncio.run(self.arun(context))

@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m venv .venv && .venv/bin/pip install ruff
-      - run: .venv/bin/ruff check src/ --ignore=E501,SIM102 --quiet
+      - run: .venv/bin/ruff check src/ --ignore=E501
       - run: .venv/bin/ruff format --check src/
 
   test:

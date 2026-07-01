@@ -98,9 +98,9 @@ class HarnessRunner:
     ) -> HarnessRunner:
         """Create a HarnessRunner wired to a pre-configured ReactAgent."""
         from forge_sdk.agents.react import ReactAgent
-        from forge_sdk.harness.profiles import AgentProfile as AP
+        from forge_sdk.harness.profiles import AgentProfile as Profile
 
-        resolved_profile = profile or AP()
+        resolved_profile = profile or Profile()
         agent = ReactAgent(
             model=agent_kwargs.pop("model", None),
             tools=tools or [],
@@ -225,7 +225,7 @@ class HarnessRunner:
         """
         results: list[StepResult] = []
 
-        for cycle in range(cycles):
+        for _cycle in range(cycles):
             # Sample tasks for this cycle
             cycle_tasks = self._sample_tasks(tasks, batch_size)
 

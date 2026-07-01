@@ -200,16 +200,14 @@ async def impact_analysis(file_path: str, path: str = ".") -> ToolResult:
     for edge in graph["edges"]:
         if edge["type"] == "imports":
             mod = edge["target"].replace(".", "/")
-            if mod in rel or rel.replace("/", ".").replace(".py", "") in edge["target"]:
-                if edge["source"] not in importers:
-                    importers.append(edge["source"])
+            if mod in rel or rel.replace("/", ".").replace(".py", "") in edge["target"] and edge["source"] not in importers:
+                importers.append(edge["source"])
 
     for node in graph["nodes"]:
         if node["file"] == rel:
             for edge in graph["edges"]:
-                if edge["type"] == "calls" and node["name"] in edge["target"]:
-                    if edge["source"] != rel and edge["source"] not in dependents:
-                        dependents.append(edge["source"])
+                if edge["type"] == "calls" and node["name"] in edge["target"] and edge["source"] != rel and edge["source"] not in dependents:
+                    dependents.append(edge["source"])
 
     return ToolResult(
         success=True,
