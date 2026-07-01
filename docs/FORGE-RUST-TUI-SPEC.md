@@ -54,8 +54,43 @@ forge/
 │       ├── doctor.rs              # DoctorCheck, DoctorReport, EscalationRecord
 │       ├── renderer.rs            # EventRenderer trait (ADR-2)
 │       ├── tracer.rs              # Span, SpanKind, Tracer (observability)
-│       ├── audit.rs               # AuditEntry, AuditLog, EventSink trait
-│       └── security.rs            # Path safety, command safety, credential store detection
+│       └── audit.rs               # AuditEntry, AuditLog, EventSink trait
+│                                   # (security.rs REMOVED from forge-core 2026-07-01 — see
+│                                   #  forge-core-security below. Not a fresh design choice made
+│                                   #  here; this doc catching up to an already-Director-approved,
+│                                   #  already-merged decision — specs/SPEC-SECURITY-003, PR #35 —
+│                                   #  that this 9-crate spec predates and never incorporated.
+│                                   #  IMPLEMENTATION_PLAYBOOK.md §2.6 previously specced a
+│                                   #  competing, incompatible security.rs design in forge-core
+│                                   #  itself; that draft is superseded, not merely duplicated —
+│                                   #  see the note there.)
+│
+├── forge-core-security/           # NEW crate, 2026-07-01 — canonical per specs/SPEC-SECURITY-003
+│   │                               # (already Director-approved + merged, PR #35/#36/#37; this
+│   │                               # crate itself not yet started — "Rust crate itself not yet
+│   │                               # started" per that spec's own status line as of this write).
+│   │                               # Separate from forge-core deliberately: SPEC-SECURITY-003 §4
+│   │                               # Phase 1 ships it as a Python-callable module FIRST (JSON-in/
+│   │                               # JSON-out subprocess pipe) so the CURRENT Python forge-sdk
+│   │                               # gets compile-time-enforced containment before the rest of
+│   │                               # the Rust core exists at all — it cannot be nested inside
+│   │                               # forge-core without forcing the whole forge-core Rust build
+│   │                               # to exist first, which defeats that sequencing.
+│   ├── Cargo.toml                 # dep: cap-std, serde + serde_json, untrusted_value (all 3
+│   │                               # Director-approved 2026-07-01 as foundational infra, not
+│   │                               # forge-specific policy — SPEC-SECURITY-003 §7 decisions log)
+│   └── src/
+│       ├── lib.rs
+│       ├── containment.rs         # Tainted<T>/Trusted<T> (built on untrusted_value's
+│       │                          # UntrustedValue<T>), ContainmentResult{Safe{category,
+│       │                          # risk_score}, Quarantined{risk_score}} — Quarantined carries
+│       │                          # NO text field at all, nothing to leak, per "make illegal
+│       │                          # states unrepresentable"
+│       └── sandbox.rs             # SandboxRoot wrapping cap_std::fs::Dir — the ONLY filesystem
+│                                   # entry point given to tool handlers; there is no path-safety
+│                                   # FUNCTION to forget to call, because there is no other way to
+│                                   # open a file (replaces the old free-function
+│                                   # check_path_safety()/check_command_safety() design)
 │
 ├── forge-providers/                 # ⚠️ CORRECTED 2026-07-01, REVISED same day per Director
 │   │                                 # feedback: NOT a single-crate genai lock-in. Three-tier
@@ -133,12 +168,20 @@ forge/
 ```
 forge-core ─────────────────────────────────────► (no external deps beyond async-trait + thiserror + serde + tokio)
   │
+  ├─ forge-core-security ── dep: cap-std, serde + serde_json, untrusted_value (SPEC-SECURITY-003 §7,
+  │                          Director-approved 2026-07-01 — foundational infra, not forge policy).
+  │                          NOT a dep of forge-core; forge-core's agent.rs/permission.rs DEPEND ON
+  │                          forge-core-security for Tainted<T>/Trusted<T>/SandboxRoot, not vice
+  │                          versa — this crate must compile standalone since Phase 1 also ships
+  │                          it to the current Python CLI via a subprocess JSON pipe.
   ├─ forge-providers ── dep: forge-core, genai v0.6.x (replaces forge-gemini/forge-ollama/forge-openai)
-  ├─ forge-cli ─────── dep: forge-core, forge-tui (optional), clap, tokio, tracing, syntect
+  ├─ forge-cli ─────── dep: forge-core, forge-core-security, forge-tui (optional), clap, tokio, tracing, syntect
   ├─ forge-tui ─────── dep: forge-core, crossterm, ratatui
   ├─ forge-mcp ─────── dep: forge-core, mcp_rust_sdk v0.1.1 (⚠️ early-stage: 2 releases, ~5k downloads — re-check maturity before committing)
   └─ forge-harness ── dep: forge-core, serde_yaml
 ```
+
+**Corrected crate count** (was "9-crate," corrected once already to "6-7" per CLAUDE-REVIEW.md §7.8, now): **8 crates** — forge-core, forge-core-security (new, this pass), forge-providers, forge-cli, forge-tui, forge-mcp, forge-harness, plus the workspace root. `forge-core` DEPENDS ON `forge-core-security` (for `agent.rs`'s tool-call boundary and `permission.rs`'s decision types, per the reconciliation in §4 below), which is the reverse of what a reader might assume from "core" naming — flagging explicitly so no one assumes `forge-core-security` is an optional add-on.
 
 ### Core Dependencies (forge-core)
 
@@ -566,6 +609,8 @@ pub struct PermissionGateEvent {
 
 ## 4. forge-core: Permission Gate
 
+**⚠️ Reconciled 2026-07-01 against `specs/SPEC-SECURITY-003-rust-core-compile-time-containment.md` §3.4 (already Director-approved, PR #35 merged).** This section previously specced `PermissionVerdict { Allowed{reason: String}, Denied{reason: String}, NeedsApproval{prompt: String} }` — three free-text fields, independently invented, never cross-checked against SPEC-SECURITY-003's `PermissionDecision`/`PolicyTier`/`DenyReason` shapes which cover the exact same concern and were approved the same day this master spec's later sections were written. Per CLAUDE.md prime directive 3, one of these has to win; SPEC-SECURITY-003 does, both because it's the Director-approved one and because its design is stricter (closed enums, not free text — the same "near-zero natural text by output time" property the Director has now named explicitly as a project-wide goal). What follows is the reconciled design, not the original.
+
 ### 4.1 ActionClassification
 
 ```rust
@@ -576,33 +621,85 @@ pub enum ActionClassification {
 }
 ```
 
-### 4.2 PermissionStrategy Trait
+### 4.2 PermissionStrategy Trait, PermissionContext, and the reconciled decision types
 
 ```rust
 #[async_trait]
 pub trait PermissionStrategy: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
     fn classification(&self) -> ActionClassification;
-    async fn check(&self, ctx: &PermissionContext) -> PermissionVerdict;
+    async fn check(&self, ctx: &PermissionContext) -> PermissionDecision;
 }
 
 #[derive(Debug, Clone)]
 pub struct PermissionContext {
-    pub action_label: String,
+    pub action_label: String,          // ⚠️ human-facing display only — see DenyReason note below;
+                                        // never matched on or branched on programmatically
     pub classification: ActionClassification,
     pub tool_name: String,
     pub tool_args: HashMap<String, serde_json::Value>,
     pub cwd: PathBuf,
-    pub sandbox_dir: Option<PathBuf>,
+    pub sandbox: forge_core_security::SandboxRoot,  // replaces sandbox_dir: Option<PathBuf> — a
+                                        // capability, not a path string a check function can be
+                                        // handed and forget to validate; see forge-core-security
+                                        // (FORGE-RUST-TUI-SPEC.md §1) and IMPLEMENTATION_PLAYBOOK.md
+                                        // §2.6
     pub files_read_in_session: Vec<PathBuf>,
     pub permission_mode: PermissionMode,
+    pub task: forge_core_security::Trusted<String>,  // the ORIGINATING task/intent string, needed
+                                        // for the "explicit, specific intent" check in
+                                        // SoftDeny::Allow-override below — Trusted because it's the
+                                        // Director's own instruction, not attacker-reachable text
 }
 
-#[derive(Debug, Clone)]
-pub enum PermissionVerdict {
-    Allowed { reason: String },
-    Denied { reason: String },
-    NeedsApproval { prompt: String },
+// ── Reconciled 2026-07-01 per SPEC-SECURITY-003 §3.4 — supersedes the old
+// PermissionVerdict{Allowed{reason:String}, Denied{reason:String},
+// NeedsApproval{prompt:String}}. Matches Anthropic's own SDK shape:
+// {behavior:"allow", updatedInput?, updatedPermissions?} | {behavior:"deny",
+// message, interrupt?} — except `message`/free-text reasons become a closed
+// DenyReason enum here, one step stricter than Anthropic's own shape, per
+// the Director's "near-zero natural text" directive. There is no third
+// "NeedsApproval" variant: what the old design called NeedsApproval is a
+// Deny with interrupt:true — the agent loop pauses and re-asks once a human
+// (or PolicyTier::Environment override) resolves it, exactly like Claude
+// Code's own hook model. Collapsing 3 states to 2 is not a simplification
+// for its own sake — it removes a whole category of "which free-text state
+// am I in" ambiguity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PermissionDecision {
+    Allow { updated_input: Option<serde_json::Value> },
+    Deny { reason: DenyReason, interrupt: bool },
+}
+
+/// Closed enum, NOT a free-text message — this is the field that used to be
+/// `Denied { reason: String }`. A denial a machine (audit log, TUI, retry
+/// logic) needs to reason about should never require parsing English prose
+/// to find out why. `action_label` (PermissionContext, above) still carries
+/// a human-facing display string for the TUI, but DenyReason is what code
+/// branches on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DenyReason {
+    HardDenyRule { rule_id: &'static str },       // PolicyTier::HardDeny — unconditional, no override
+    NoReadEvidence,                                // ported anti-slop: edit without a prior read
+    TestDeletionWithoutReplacement,                // ported anti-slop
+    OutsideSandbox,                                 // from forge-core-security::SandboxRoot
+    QuarantinedContent,                             // from forge-core-security::ContainmentResult::Quarantined
+    NeedsExplicitIntent { classification: ActionClassification },  // SoftDeny pending an
+                                                     // explicit-intent check (§4.4) or a live human decision
+    UsageLimitExceeded,                             // mirrors FailureReason::UsageLimitExceeded (§6)
+}
+
+/// SPEC-SECURITY-003 §3.4 — governs whether a given ActionClassification can
+/// be overridden by PermissionMode::Yolo or an explicit-intent match at all.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PolicyTier {
+    HardDeny,      // unconditional — no Allow, no explicit intent, no Yolo mode clears this
+    SoftDeny,      // clearable by an Allow exception or explicit, specific task intent (§4.4)
+    Allow,         // always allowed, regardless of PermissionMode
+    Environment,   // network-egress trust-list membership (replaces the old blanket
+                   // _NETWORK_CMD_PATTERNS deny-everything — an Environment entry is how a
+                   // Director-declared-trusted endpoint gets curl'd without loosening the
+                   // block for everything else)
 }
 ```
 
@@ -610,15 +707,22 @@ pub enum PermissionVerdict {
 
 ```rust
 pub struct PermissionGate {
-    mode: PermissionMode,
-    anti_slop_strategies: Vec<Box<dyn PermissionStrategy>>,  // H13
+    mode: PermissionMode,                              // session-level posture — orthogonal to
+                                                         // PolicyTier, which is per-rule
+    anti_slop_strategies: Vec<Box<dyn PermissionStrategy>>,
+    policy: HashMap<ActionClassification, PolicyTier>,  // NEW 2026-07-01 — the per-classification
+                                                         // tier lookup SPEC-SECURITY-003 §3.4
+                                                         // specifies; PermissionMode::Yolo does NOT
+                                                         // bypass a HardDeny entry here, closing
+                                                         // the exact gap the old design's flat
+                                                         // "Yolo => always Allowed" branch had
     history: Vec<PermissionGateEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PermissionMode {
-    Interactive,  // Prompt for non-safe actions
-    Yolo,         // Auto-allow (anti-slop still active)
+    Interactive,  // Prompt for non-safe actions — real, shipped in Python v0.7.0, port as-is
+    Yolo,         // Auto-allow SoftDeny/Allow tiers — HardDeny still blocks, unconditionally
     Plan,         // Batch-approve upfront
 }
 
@@ -627,73 +731,191 @@ impl PermissionGate {
         Self {
             mode,
             anti_slop_strategies: Self::default_anti_slop(),
+            policy: Self::default_policy(),
             history: Vec::new(),
         }
     }
 
-    /// H13: Anti-slop hard gates — active in ALL modes
+    /// Anti-slop hard gates — active in ALL modes, including Yolo (H13).
+    /// ⚠️ Corrected 2026-07-01: the original list here had 4 entries, but
+    /// only 2 (NoEditWithoutReadEvidence, NoTestDeletionWithoutReplacement)
+    /// exist in the real Python `permissions.py::DEFAULT_STRATEGIES`
+    /// (verified directly — CLAUDE-REVIEW.md §7.4). `MustAddTestForFix` has
+    /// no precedent anywhere (Python or SPEC-SECURITY-003) and is DROPPED
+    /// here, not silently ported, until it's proposed as new scope on its
+    /// own merits. `ProtectedPaths` now has a real, correct home: it's not
+    /// a PermissionStrategy at all — it's a HardDeny PolicyTier entry (see
+    /// default_policy() below), because "protect this path unconditionally"
+    /// is exactly what PolicyTier::HardDeny means, and because actual path
+    /// protection now lives in forge-core-security's SandboxRoot capability
+    /// object (§4.2), not a checkable-and-forgettable strategy function.
     fn default_anti_slop() -> Vec<Box<dyn PermissionStrategy>> {
         vec![
             Box::new(NoEditWithoutReadEvidence),
-            Box::new(MustAddTestForFix),
             Box::new(NoTestDeletionWithoutReplacement),
-            Box::new(ProtectedPaths),
         ]
     }
 
-    pub async fn evaluate(&mut self, ctx: &PermissionContext) -> PermissionVerdict {
-        // 1. Anti-slop runs first, always
+    /// NEW 2026-07-01, per SPEC-SECURITY-003 §3.4. Seeds the classification
+    /// -> tier map. GitHistory and Auth are HardDeny by default (destructive/
+    /// credential-adjacent, matching this project's own real, live-caught
+    /// gap — SPEC-SECURITY-003 §0.1's `.cline/data/settings/settings.json`
+    /// miss). Destructive/Exec/Install start SoftDeny (overridable by
+    /// explicit task intent, §4.4). Safe/LocalWrite start Allow.
+    /// NetworkOut/NetworkIn start Environment (empty trust list by default —
+    /// nothing is curl-able until the Director declares an endpoint trusted).
+    fn default_policy() -> HashMap<ActionClassification, PolicyTier> { /* ... */ }
+
+    pub async fn evaluate(&mut self, ctx: &PermissionContext) -> PermissionDecision {
+        // 1. Anti-slop runs first, always, in EVERY mode including Yolo —
+        //    unchanged principle from the original design, now returning
+        //    PermissionDecision instead of the old 3-state verdict.
         for s in &self.anti_slop_strategies {
-            if let PermissionVerdict::Denied { .. } = s.check(ctx).await {
-                return s.check(ctx).await;
+            if let PermissionDecision::Deny { reason, .. } = s.check(ctx).await {
+                return PermissionDecision::Deny { reason, interrupt: false };
             }
         }
-        // 2. Mode-specific
+        // 2. PolicyTier lookup — this runs BEFORE the PermissionMode branch
+        //    and can override it. This is the fix for the old design's real
+        //    bug: PermissionMode::Yolo used to mean "always Allowed," full
+        //    stop, which is exactly how a HardDeny-shaped mistake (the real
+        //    .cline/ credential miss) would have sailed through in Yolo mode.
+        match self.policy.get(&ctx.classification) {
+            Some(PolicyTier::HardDeny) => return PermissionDecision::Deny {
+                reason: DenyReason::HardDenyRule { rule_id: "policy_tier" }, interrupt: false,
+            },
+            Some(PolicyTier::Allow) => return PermissionDecision::Allow { updated_input: None },
+            Some(PolicyTier::Environment) => { /* check ctx against the trust list — Allow if
+                                                    listed, else SoftDeny fallthrough below */ }
+            Some(PolicyTier::SoftDeny) | None => { /* fall through to mode-specific handling */ }
+        }
+        // 3. Mode-specific, for anything still SoftDeny after step 2.
         match self.mode {
-            PermissionMode::Interactive => {
-                if ctx.classification == ActionClassification::Safe {
-                    PermissionVerdict::Allowed { reason: "safe".into() }
-                } else {
-                    PermissionVerdict::NeedsApproval { prompt: format!("Allow {}?", ctx.action_label) }
-                }
-            }
-            PermissionMode::Yolo => PermissionVerdict::Allowed { reason: "yolo".into() },
-            PermissionMode::Plan => PermissionVerdict::NeedsApproval { prompt: "batch".into() },
+            PermissionMode::Interactive => PermissionDecision::Deny {
+                reason: DenyReason::NeedsExplicitIntent { classification: ctx.classification.clone() },
+                interrupt: true,  // pause and ask a human — this IS the old NeedsApproval state,
+                                   // modeled as Deny+interrupt per SPEC-SECURITY-003 §3.4
+            },
+            PermissionMode::Yolo => PermissionDecision::Allow { updated_input: None },  // SoftDeny
+                                   // only reaches here if PolicyTier didn't already HardDeny it —
+                                   // that ordering is the whole point of step 2 running first
+            PermissionMode::Plan => PermissionDecision::Deny {
+                reason: DenyReason::NeedsExplicitIntent { classification: ctx.classification.clone() },
+                interrupt: true,  // batch-approve UI collects these before the run starts
+            },
         }
     }
 }
 ```
 
+### 4.4 Explicit-intent check (SoftDeny override) — mechanical, not semantic
 
-## 5. forge-core: Five-Gate Verification Pipeline
+Per SPEC-SECURITY-003 §3.4, matching Claude Code's own documented rule: "general requests don't count as explicit intent... asking to 'clean up the repo' doesn't authorize force-pushing, but asking to 'force-push this branch' does." Forge's version must be a **typed comparison against the task string's specificity, not a semantic/LLM judgment call** — keeping this mechanical is the same principle as everything else in this section (an LLM call here would reintroduce exactly the guess-based, non-zero-false-negative-rate gate §1 of SPEC-SECURITY-002 spent its whole first section explaining why to avoid). Exact matching function TBD at implementation time; the requirement is: token/phrase-level match against `ctx.task` (the `Trusted<String>` field on `PermissionContext`) for the specific action being requested (e.g. does the task string contain the specific branch name being force-pushed, not just the word "push"), never a model call, never a fuzzy-similarity score above some threshold treated as "close enough."
 
-**⚠️ Gap found 2026-07-01 (Claude hardening pass):** two problems, both unresolved, both should be closed before Phase 2 implementation starts.
 
-1. **`VerificationContext` (used by `VerificationGate::verify(&self, ctx: &VerificationContext)` and `VerifierPipeline::run_all`) is referenced but never defined anywhere in this spec** — same class of gap as `AgentContext`/`AgentStep` (now fixed, IMPLEMENTATION_PLAYBOOK.md §2.3/§2.2b). Ground truth for what it needs to carry: the real Python `Verifier` (`src/forge_sdk/verifiers/__init__.py`) needs, across its gates, at minimum the edited file path(s)/content, a diff or edit description, the originating task/spec description (for `spec_conformance_check`), and `ModelPort` access (`SemanticCheck` — INV-203/207 — uses a DISTINCT model instance to grade the code, deliberately not the model that wrote it). `VerificationContext` should carry all of these; exact field list not yet specced — do this before Phase 2.
-2. **The "5 gates" below (SyntaxCheck/LintAnalysis/TestExecution/PropertyCheck/FormalBound) do NOT match the real Python verifier's actual gates.** Checked `src/forge_sdk/verifiers/__init__.py` directly: the real, live `VerificationConfig.enabled_gates` default is 4 named gates — `syntactic`, `ast_parse`, `entity_validation`, `shell_dry_run` — plus two more real mechanisms elsewhere in the same file: `spec_conformance_check()` (a function) and `SemanticCheck` (a class using a distinct `ModelPort` to grade the edit, per INV-203/207 — "the model that writes code does NOT grade it"). That's **6 real gate concepts, different names, different count** from the 5 claimed below. `PropertyCheck` (proptest) and `FormalBound` (Lean) have **no Python precedent at all** — like `router.rs` (IMPLEMENTATION_PLAYBOOK.md §2.8), they are new, aspirational gates being introduced without being labeled as new. Before Phase 2: either (a) rename/remap the 5 Rust gates to honestly reflect the real 6, keeping `PropertyCheck`/`FormalBound` but explicitly flagged `NEW — no Python precedent` the way `router.rs` now is, or (b) get an explicit decision that this is an intentional redesign, not a port, and document it as such. Don't let an implementer discover this mismatch mid-Phase-2 by diffing against the real source themselves.
+## 5. forge-core: Verification Pipeline (RESOLVED 2026-07-01 — was "Five-Gate," now 6 real + 1 deferred)
+
+**Resolution of the gap flagged earlier this pass**: checked `src/forge_sdk/verifiers/__init__.py` in full, including the two gates the first pass only found by name (`spec_conformance_check()`, `SemanticCheck`). The real, live gate set is 6, not 5, and 2 of the originally-claimed 5 (`PropertyCheck`, `FormalBound`) have zero Python precedent. Decision: **rename to match reality for the 6 real gates, keep `PropertyCheck` explicitly flagged NEW/deferred, drop `FormalBound` from v1 entirely** — Lean formal verification has no prototype anywhere in this codebase, no demonstrated need, and is exactly the certification-theater pattern CLAUDE-REVIEW.md §7.5 already recommended cutting (rigor-signaling without a real auditor asking for it). If a real need for it surfaces later, re-add it as a flagged, scoped v2 addition — don't carry a placeholder gate that's never been built in any language.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GateKind {
-    SyntaxCheck,   // L0: compiles
-    LintAnalysis,  // L1: no anti-patterns
-    TestExecution, // L2: tests pass
-    PropertyCheck, // L3: proptest invariants
-    FormalBound,   // L4: Lean formal bound
+    SyntaxCheck,       // L0 — ports Python's `syntactic`
+    AstParse,          // L1 — ports Python's `ast_parse` (was misleadingly named "LintAnalysis")
+    EntityValidation,  // L2 — ports Python's `entity_validation` (was MISSING entirely from the
+                       //      original 5 — checks that files/symbols the task named are real,
+                       //      backs AgentResult.named_targets_missing, §2.1)
+    ShellDryRun,       // L3 — ports Python's `shell_dry_run` (was misleadingly named "TestExecution":
+                       //      Python's real gate is a dry-run, not necessarily the full test suite —
+                       //      keep that distinction, don't silently broaden scope in the port)
+    SpecConformance,   // L4 — ports `spec_conformance_check()` (was MISSING — keyword-matches
+                       //      file-artifacts named in the task against actual edits/output;
+                       //      explicitly "not an LLM call" per its own Python docstring)
+    SemanticCheck,     // L5 — ports the `SemanticCheck` class (was MISSING — INV-203/207: a
+                       //      DISTINCT ModelPort instance grades whether the solution matches
+                       //      task_intent; already migrated onto contain_untrusted_text() per
+                       //      SPEC-SECURITY-003 Phase 0-A/PR #37 — verified real, live code)
+    PropertyCheck,     // ⚠️ NEW — no Python precedent, proptest-based, DEFERRED to v2 unless the
+                       //      Director wants it in v1 on its own merits, not because "5 gates"
+                       //      sounded complete
+    // FormalBound — CUT from v1 entirely, see resolution note above. Do not add a
+    // placeholder variant for it; add it back only when/if a Lean integration is real.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationEvidence {
     pub gate: GateKind,
-    pub stable_id: String,       // ai_semantic_rag_pack
+    pub stable_id: String,       // e.g. "SEMANTIC-CHECK-001" for SemanticCheck, matching Python's
+                                  // real STABLE_ID convention — verified, not invented
     pub status: VerificationStatus,
-    pub detail: String,
-    pub output: String,
+    pub detail: GateFailureReason, // ⚠️ CHANGED from `detail: String` — same "near-zero natural
+                                  // text" principle as §4's DenyReason (a SEPARATE enum — a
+                                  // verification-gate result isn't a permission decision, don't
+                                  // conflate the two concerns just because both want to avoid free
+                                  // text). A failed gate's machine-actionable reason should be a
+                                  // closed enum a retry-loop or audit query can match on, not
+                                  // English prose to parse. See the residual note below re:
+                                  // SemanticCheck's LLM-generated "reason" string specifically.
+    pub output: String,           // raw command/model output — human-facing display ONLY, never
+                                  // re-composed into a future prompt (same rule as
+                                  // ContainmentResult.raw_text, §2.6/IMPLEMENTATION_PLAYBOOK.md)
     pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VerificationStatus { Passed, Failed, Skipped, Error }
+
+/// NEW 2026-07-01 — the closed-enum companion to VerificationEvidence.detail,
+/// distinct from §4's DenyReason (permission decisions and verification
+/// results are different concerns; don't collapse them just because both
+/// want to avoid free text). One variant per real gate's actual failure
+/// shape, grounded against verifiers/__init__.py — not invented generically.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GateFailureReason {
+    SyntaxError,
+    LintViolation,
+    NamedTargetMissing { target: String },       // EntityValidation
+    DryRunFailed,                                 // ShellDryRun
+    ArtifactsMissing { missing: Vec<String> },    // SpecConformance — ports the real
+                                                   // `missing` list from spec_conformance_check()
+    SemanticMismatch { reason_code: SemanticReasonCode },  // SemanticCheck — see the residual
+                                                   // note below for reason_code's own hardening
+    ModelNotConfigured,                           // SemanticCheck when model_port is None —
+                                                   // Error, not Skipped, matching Python exactly
+    PropertyViolation,                            // PropertyCheck, if/when it ships
+    BudgetSkipped,                                // this gate was skipped under VerificationBudget
+                                                   // pressure (Part 9, REFACTORED-PLAN-COMPLETE.md)
+                                                   // — distinct from a real failure, never conflate
+}
+
+/// Closed reason-code companion for SemanticCheck's grading-model output —
+/// see the residual natural-text-leak note below this code block.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SemanticReasonCode { Mismatch, PartialImplementation, WrongFile, Unclear }
+
+/// RESOLVED 2026-07-01 — was undefined. Ground truth: what the 6 real
+/// Python gates actually consume across spec_conformance_check() and
+/// SemanticCheck.execute() (the other 4 gates are simpler and don't need
+/// most of these fields, but the context type has to cover the superset).
+pub struct VerificationContext {
+    pub task: Trusted<String>,                 // originating task/intent — for SpecConformance +
+                                                 // SemanticCheck; Trusted because it's the
+                                                 // Director's own instruction (forge-core-security,
+                                                 // §4.2)
+    pub all_edits: Vec<PathBuf>,                // files touched this run — for SpecConformance
+    pub output: String,                         // agent's final output text — for SpecConformance
+    pub solution_summary: Tainted<String>,      // ⚠️ Tainted, not Trusted — this is a
+                                                 // model-or-agent-authored summary of what changed,
+                                                 // NOT Director-authored; SemanticCheck's real
+                                                 // Python code already wraps this via
+                                                 // contain_untrusted_text() before prompting
+                                                 // (verified — SemanticCheck.execute(), PR #37)
+    pub model_port: Option<Arc<dyn ModelPort>>, // for SemanticCheck — MUST be a distinct instance
+                                                 // from whatever model wrote the code (INV-203);
+                                                 // None => SemanticCheck returns
+                                                 // VerificationStatus::Error, never silently Skipped
+                                                 // (matches Python's real behavior exactly)
+}
 
 #[async_trait]
 pub trait VerificationGate: Send + Sync {
@@ -701,27 +923,62 @@ pub trait VerificationGate: Send + Sync {
     async fn verify(&self, ctx: &VerificationContext) -> VerificationEvidence;
 }
 
+/// NEW 2026-07-01 — mirrors LoopGuard's existing max_cost/max_tokens shape
+/// (§6.1) rather than inventing a new budget concept. See Part 9 of
+/// REFACTORED-PLAN-COMPLETE.md for the DSpark-inspired rationale: degrade
+/// L4/L5 (SpecConformance/SemanticCheck — the most expensive, an LLM call)
+/// under pressure; L0-L3 are cheap/deterministic and never skipped.
+pub struct VerificationBudget {
+    pub remaining_cost: f64,
+    pub remaining_tokens: u64,
+}
+impl VerificationBudget {
+    pub fn should_skip(&self, gate: GateKind) -> bool {
+        matches!(gate, GateKind::SemanticCheck | GateKind::PropertyCheck)
+            && (self.remaining_cost <= 0.0 || self.remaining_tokens == 0)
+    }
+}
+
 pub struct VerifierPipeline {
     gates: Vec<Box<dyn VerificationGate>>,
+    budget: Option<VerificationBudget>,  // NEW 2026-07-01 — see Part 9 of
+                                          // REFACTORED-PLAN-COMPLETE.md (DeepSeek DSpark-inspired
+                                          // hardening): under real, already-lived rate-limit
+                                          // pressure, degrade SemanticCheck/PropertyCheck first
+                                          // (expensive, lower marginal safety value per edit) —
+                                          // SyntaxCheck/AstParse/EntityValidation always run
 }
 
 impl VerifierPipeline {
-    pub fn new() -> Self { Self { gates: Vec::new() } }
+    pub fn new() -> Self { Self { gates: Vec::new(), budget: None } }
     pub fn add_gate<G: VerificationGate + 'static>(&mut self, gate: G) {
         self.gates.push(Box::new(gate));
     }
+    /// Real 6-gate default, in the real Python's own fail-fast order for the
+    /// first 4 (`VerificationConfig.enabled_gates`), with SpecConformance/
+    /// SemanticCheck appended — confirm at implementation time whether
+    /// Python actually runs those last two IN the same fail-fast loop or as
+    /// a separate stage; this spec does not have that confirmed, flagging
+    /// honestly rather than asserting an unverified ordering.
     pub fn with_default_gates() -> Self {
         let mut p = Self::new();
-        p.add_gate(SyntaxCheckGate);     // L0
-        p.add_gate(LintAnalysisGate);    // L1
-        p.add_gate(TestExecutionGate);   // L2
-        p.add_gate(PropertyCheckGate);   // L3
-        p.add_gate(FormalBoundGate);     // L4
+        p.add_gate(SyntaxCheckGate);        // L0
+        p.add_gate(AstParseGate);           // L1
+        p.add_gate(EntityValidationGate);   // L2
+        p.add_gate(ShellDryRunGate);        // L3
+        p.add_gate(SpecConformanceGate);    // L4
+        p.add_gate(SemanticCheckGate);      // L5 — needs ModelPort; see VerificationContext
         p
     }
     pub async fn run_all(&self, ctx: &VerificationContext) -> Vec<VerificationEvidence> {
         let mut r = Vec::new();
         for g in &self.gates {
+            if let Some(budget) = &self.budget {
+                if budget.should_skip(g.kind()) {
+                    r.push(VerificationEvidence { gate: g.kind(), status: VerificationStatus::Skipped, /* ... */ });
+                    continue;
+                }
+            }
             let e = g.verify(ctx).await;
             r.push(e.clone());
             if e.status == VerificationStatus::Failed { break; }
@@ -730,6 +987,8 @@ impl VerifierPipeline {
     }
 }
 ```
+
+**Residual natural-text leak found while grounding this section, flagged for the Director's broader "near-zero natural text" directive**: real `SemanticCheck.execute()` prompts the grading model for JSON `{"pass": bool, "confidence": float, "reason": "brief"}` and then does `message=reason` — the model's own free-text `reason` flows into `VerificationEvidence.message` (now `.detail`, above) largely unconstrained. This is lower-severity than the injection-containment findings elsewhere (it's the grading model's own output, not attacker-reachable input), but it's still natural text a downstream consumer might parse programmatically. Recommended hardening for whenever this gate is actually ported: constrain the grading model's JSON schema to include a closed `reason_code` enum (e.g. `Mismatch | PartialImplementation | WrongFile | Unclear`) alongside the free-text `reason`, and have `VerificationEvidence.detail` carry the enum, with the free-text staying in `.output` for human display only — the same category split as everywhere else in this pass.
 
 ## 6. forge-core: FailureReason Enum & Honest Failures
 

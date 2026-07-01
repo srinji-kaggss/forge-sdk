@@ -72,9 +72,10 @@ PROVIDERS:   forge-gemini | forge-ollama | forge-openai | forge-mcp
 | REQ-PERM-001 | permission.rs | PermissionGate in 3 modes (interactive/yolo/plan) | Unit all 3 | SIL3 |
 | REQ-PERM-002 | permission.rs | Anti-slop gates active in ALL modes | Unit test | SIL3 |
 | REQ-PERM-003 | permission.rs | ActionClassification covers 10 categories | Match exhaustiveness | SIL2 |
-| REQ-VER-001 | verifier.rs | 5-gate pipeline (Syntax→Lint→Tests→Property→Formal) | Integration test | SIL3 |
-| REQ-VER-002 | verifier.rs | Fail-fast on gate failure | Unit test | SIL2 |
-| REQ-VER-003 | verifier.rs | VerificationEvidence carries stable_id | Unit test | SIL2 |
+| REQ-VER-001 | verifier.rs | 6-gate pipeline (⚠️ CORRECTED 2026-07-01, was "5-gate Syntax→Lint→Tests→Property→Formal": real Python has 6 gates — SyntaxCheck→AstParse→EntityValidation→ShellDryRun→SpecConformance→SemanticCheck; PropertyCheck deferred to v2, FormalBound cut — see FORGE-RUST-TUI-SPEC.md §5) | Integration test | SIL3 |
+| REQ-VER-002 | verifier.rs | Fail-fast on gate failure, budget-aware skip for SemanticCheck/PropertyCheck under pressure (NEW clause 2026-07-01) | Unit test | SIL2 |
+| REQ-VER-003 | verifier.rs | VerificationEvidence carries stable_id + closed GateFailureReason (NEW 2026-07-01, replaces free-text detail) | Unit test | SIL2 |
+| REQ-VER-004 | verifier.rs | VerificationContext defined with task/all_edits/output/solution_summary/model_port (⚠️ NEW ID 2026-07-01 — was undefined) | Unit test | SIL2 |
 | REQ-SESS-001 | session.rs | Session save/load/list/delete | Integration test | SIL2 |
 | REQ-SESS-002 | session.rs | FileSessionStore at ~/.forge/checkpoints/ | Unit test | SIL2 |
 | REQ-DOC-001 | doctor.rs | L0-L5 DoctorEngine with escalation ladder | Integration test | SIL2 |
@@ -391,61 +392,23 @@ impl AuditLog {
 
 **Verification:** unit test hash-chain continuity (3 sequential appends, verify_integrity() returns empty); unit test tamper detection (mutate one stored payload directly in the DB, verify_integrity() flags it); unit test genesis hash is exactly 64 zero chars, matching Python.
 
-### 2.6 security.rs — path safety, command safety, untrusted-text containment
+### 2.6 security.rs — SUPERSEDED 2026-07-01, moved to forge-core-security per SPEC-SECURITY-003
 
-**⚠️ Highest-priority gap found in this hardening pass.** The original spec's one-line treatment ("Shell fix + path safety") drastically understates this module. Ground truth is `src/forge_sdk/security.py` — 505 lines, a genuine 5-layer STRIDE/DREAD threat model (L1 Perimeter/path containment, L2 Network-egress blocking, L3 Host destructive-command blocking, L4 Application-layer untrusted-text containment, L5 Data sensitive-path allowlist), already carrying a **deliberate security redesign that fixed a real bug (GH issue #25)** — porting this from a one-line spec summary instead of the real file would very likely regress that fix. This module should NOT be assigned to whichever agent draws the short straw on "security.rs" without reading the real source first — treat that as a hard requirement, not a suggestion.
+**⚠️ This section previously specced a free-function `check_path_safety`/`check_command_safety` + plain-struct `ContainmentResult` design, ported directly from `security.py`. That draft is now superseded, not just relocated — it conflicts with an already-Director-approved, already-merged design (`specs/SPEC-SECURITY-003-rust-core-compile-time-containment.md`, PR #35, with Phase-0 Python stopgaps PR #36/#37 already landed) that this 9→8-crate spec predates and never incorporated. Per CLAUDE.md prime directive 3 (one canonical implementation, kill duplicates), SPEC-SECURITY-003 wins — it is the more recent, Director-approved, partially-already-implemented plan. Read that document in full before touching anything security-related in this port; the summary below is not a substitute for it.**
 
-**Requirements:** REQ-SEC-001 (Command::new().arg().output()), REQ-SEC-002 (path traversal blocked), REQ-SEC-003 (NO_COLOR) — plus 3 NEW requirements this hardening pass adds because the real module does far more than those three cover: REQ-SEC-004 (sensitive-path denylist, L5), REQ-SEC-005 (network-egress command blocking, L2), REQ-SEC-006 (typed untrusted-text containment, L4).
+**What changes, concretely, vs. the superseded draft above:**
 
-**Implementation Contract (abbreviated — port the real file's logic, not this sketch):**
+1. **Free functions → compile-time-enforced newtypes.** The old draft's `check_path_safety(path, cwd, sandbox_dir, check_writes) -> Result<(), PathSafetyError>` is a runtime check a caller can forget to invoke — exactly the same "convention, not enforcement" weakness SPEC-SECURITY-002 named for the Python original. SPEC-SECURITY-003 §3.2 replaces this with `Tainted<T>` / `Trusted<T>` newtypes (built on the approved `untrusted_value` crate's `UntrustedValue<T>`, whose inner field is private — there is no code path that extracts a raw `T` without going through `.sanitize_with(fn)`). A `PromptFragment { content: Trusted<String> }` constructor call with a `Tainted<String>` **fails to compile** — a type error, not a lint warning that a busy contributor can miss. This is the concrete, buildable form of the Director's "near-zero natural text by output time" principle: it's not a style guideline, it's a type the compiler enforces.
+2. **Path denylist → capability object.** The old draft's `SENSITIVE_READ_PATHS`/`SENSITIVE_WRITE_PATHS` const-array port inherits Python's actual, demonstrated failure mode: SPEC-SECURITY-003 §0.1 found live, this session, that `security.py`'s real denylist misses `.cline/data/settings/settings.json` (a real credential store not on the hardcoded list) — Claude Code's own semantic auto-mode classifier caught it; the path denylist did not. §3.3 replaces the denylist-as-primary-mechanism with `SandboxRoot` wrapping the approved `cap-std` crate's `Dir` capability: every file open is *relative to* a capability, and there is no API that accepts an absolute or sandbox-escaping path at all — "the illegal access has no function to call," not "a function that checks and (hopefully) rejects." `SENSITIVE_READ_PATHS`-style awareness becomes a secondary, defense-in-depth signal inside `SandboxRoot::open`, not the primary containment.
+3. **`ContainmentResult` gets one field removed, not renamed.** SPEC-SECURITY-003 §3.2's version is `enum ContainmentResult { Safe { category: Category, risk_score: f32 }, Quarantined { risk_score: f32 } }` — note `Quarantined` carries **no text field at all**. The superseded draft above kept `raw_text`/`truncated_excerpt` on every variant "for logs only," which is weaker: a field that exists can still be reached by a determined or careless caller, even if documented as forbidden. Removing it from the quarantined case entirely (nothing to leak, structurally) is the stricter, correct version — apply this pattern project-wide per the Director's "unhackable" framing: **prefer removing a field over documenting it as forbidden, wherever the call site genuinely never needs it.**
+4. **`check_command_safety`'s dangerous/network pattern lists stay** (L2/L3 in the old numbering) — SPEC-SECURITY-003 doesn't replace these, they're a real, still-needed defense-in-depth layer; they just live inside `forge-core-security`'s `SafetyGate`-trait-shaped checks (§3.1, reusing the same trait *pattern*, not a dependency, as `keel-core`'s already-shipped `gates.rs` — `Kleene::{True, False, Unknown}` with `Unknown` failing closed) rather than as bare free functions in forge-core.
+5. **Crate location changed**, not just the internals: this logic now lives in the **separate `forge-core-security` crate** (FORGE-RUST-TUI-SPEC.md §1, added same pass), not `forge-core`. This is deliberate, not incidental — SPEC-SECURITY-003 Phase 1 ships it as a **Python-callable module first** (a subprocess JSON pipe: `{op, args}` → `{verdict, ...}` on stdin/stdout via `serde_json`) so the *currently-shipping* Python `forge-sdk` gets this hardening before the rest of the Rust core exists. Nesting it inside `forge-core` would block that on the whole Rust core landing first, defeating the sequencing SPEC-SECURITY-003 §4 lays out.
 
-```rust
-// L5 — ported from SENSITIVE_READ_PATHS / SENSITIVE_WRITE_PATHS (security.py).
-// Keep these as literal const arrays, same entries, same read/write split.
-const SENSITIVE_READ_PATHS: &[&str] = &["/etc/passwd", "/etc/shadow", ".ssh/", ".aws/", ".env", "id_rsa", /* ...full list, ~29 entries, port verbatim */];
-const SENSITIVE_WRITE_PATHS: &[&str] = &["/etc/", "/usr/", ".ssh/", ".git/hooks/", /* ...full list, port verbatim */];
-// Also port AGENT_CLI_CONFIG_DIRS + the credential-filename regex-equivalent
-// (word/substring match, NOT the `regex` crate — same zero-new-heavy-dep
-// discipline used in the sibling semantic-memory-brain port's evidence.rs).
+**Requirements:** REQ-SEC-001/002/003 (from the original playbook) and REQ-SEC-004/005/006 (added last pass) all still apply, but now trace to `forge-core-security` rather than `forge-core::security.rs` — update the traceability matrix's `Module` column for these six rows when this crate is scaffolded (not done in this doc pass, since the exact file layout — `containment.rs` vs `sandbox.rs` split — is specced in FORGE-RUST-TUI-SPEC.md §1, not restated here).
 
-pub enum PathSafetyError { Sensitive(String), OutsideSandbox(String), SymlinkEscape(String) }
+**Phased delivery** (per SPEC-SECURITY-003 §4/§6, already Director-approved — do not re-plan this, execute it): Phase 0 (Python-only stopgaps) is **done** — PR #36 (`.cline`/`.cursor` added to `SENSITIVE_READ_PATHS`) and PR #37 (`SemanticCheck` migrated off the delimiter-wrapper onto `contain_untrusted_text()`) both merged 2026-07-01. Phase 1 (`forge-core-security` crate itself: `Tainted`/`Trusted`, `ContainmentResult`, `SandboxRoot`) is **not yet started** — this is the next real chunk, dispatchable per SPEC-SECURITY-003 §6's P1-A/P1-B/P1-C breakdown, which is already bounded and ready (do not re-derive a dispatch prompt for this — one already exists there).
 
-/// L1 + L5. Ported from _check_path_safety(). MUST preserve: sandbox
-/// containment via canonicalize+relative_to-equivalent, symlink-escape
-/// detection, and the /tmp + platform-tempdir carve-out (issue #17 in the
-/// Python source — an agent needs to read back its own scratch writes even
-/// under an active sandbox).
-pub fn check_path_safety(path: &Path, cwd: &Path, sandbox_dir: Option<&Path>, check_writes: bool) -> Result<(), PathSafetyError> { /* ... */ }
-
-/// L2 + L3 + L5. Ported from _check_command_safety(). MUST preserve: the
-/// dangerous-command pattern set (rm -rf variants, dd/mkfs, fork bomb, kill
-/// 1, shutdown/reboot/halt), the network-egress command set (curl/wget/nc/
-/// ssh/scp/rsync/telnet/ftp), the interpreter arbitrary-exec block (python3
-/// -c / ruby -e / perl -e), and running resolved path tokens back through
-/// check_path_safety (not a second, weaker, separate check).
-pub fn check_command_safety(command: &str, cwd: &Path) -> Result<(), String> { /* ... */ }
-
-/// L4. Ported from ContainmentResult / contain_untrusted_text() — the
-/// CANONICAL way any untrusted text (tool output, file content, web
-/// content) is allowed to reach a prompt. This is the single most
-/// important design detail to preserve: callers compose ONLY `.category`
-/// (a closed enum/string) into a prompt-construction surface — NEVER
-/// `.raw_text`/`.truncated_excerpt`, which are for logs/CLI display only.
-/// Python's docstring explains why: a string-returning sanitizer can be
-/// spliced back into a free-text slot, which is exactly how GH #25
-/// happened. Do not "simplify" this back into a function returning a
-/// plain String — that would silently reintroduce the fixed bug class.
-pub struct ContainmentResult {
-    pub category: String,
-    pub risk_score: f64,
-    pub quarantined: bool,
-    pub raw_text: String,           // logs/CLI only — never composed into a prompt
-    pub truncated_excerpt: String,  // logs/CLI only — never composed into a prompt
-}
-pub fn contain_untrusted_text(text: &str, max_excerpt: usize, category: &str) -> ContainmentResult { /* ... */ }
-```
-
-**Verification:** every SENSITIVE_READ/WRITE_PATHS entry gets a unit test (both list lengths — don't silently drop entries during port); command-safety unit tests for each dangerous/network pattern class; a symlink-escape integration test (create a symlink pointing outside a sandbox, confirm denial); a ContainmentResult test confirming a caller cannot accidentally get `raw_text` where `category` was expected (type-level, not just a docstring warning — consider a newtype wrapper around the prompt-safe fields if Rust's type system can enforce the "never compose raw_text" rule better than Python's could).
+**Verification:** SPEC-SECURITY-002 §6's 10-case adversarial table (encoding obfuscation, paraphrase, translation, homoglyph, payload-splitting, roleplay, leetspeak, indirect/tool-output injection, delimiter-forgery) re-run against the Rust crate, per SPEC-SECURITY-003 §5 — plus a `trybuild`-style **negative-compilation test** asserting that constructing a `PromptFragment` from a `Tainted<String>` directly is a compile error, not a runtime failure. Do not report this phase done without an actual failed-build artifact proving that assertion, per that spec's own evidence bar.
 
 ### 2.7 config.rs — ForgeConfig (H16 fix)
 
