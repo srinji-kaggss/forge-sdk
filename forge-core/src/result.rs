@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::event::VerificationEvent;
+use crate::step::AgentStep;
 
 // ---------------------------------------------------------------------------
 // FailureReason — 7 terminal break path discriminators
@@ -163,13 +164,33 @@ impl RollbackPlan {
 ///
 /// Carries optional verification evidence, a change manifest, and a
 /// rollback plan alongside the success/failure status.
+///
+/// **Invariant:** When `success = false`, `failure_reason` MUST be `Some`.
+/// This is documented but not type-enforced — callers should validate
+/// with `validate_invariant()` before using the result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentResult {
     pub success: bool,
+    /// The agent's final text output (required for CLI display).
+    pub output: String,
+    /// Ordered execution trace of steps (required by TUI Timeline).
+    pub steps: Vec<AgentStep>,
     pub total_steps: u32,
     pub total_tokens: u64,
     pub total_cost: f64,
     pub duration_ms: u64,
+    /// Correlation trace ID — every event in the run shares this.
+    pub trace_id: String,
+    /// Correlation run ID — scoped to a single execution.
+    pub run_id: String,
+    /// Which model actually ran (required by router.rs).
+    pub model: String,
+    /// Provider identifier (same reasoning as model).
+    pub provider: String,
+    /// Files that were touched during the run (required by VerificationContext).
+    pub edits_made: Vec<String>,
+    /// Named targets from the task that weren't found (EntityValidation gate).
+    pub named_targets_missing: Vec<String>,
     pub failure_reason: Option<FailureReason>,
     pub verification: Vec<VerificationEvidence>,
     pub change_manifest: Option<ChangeManifest>,
@@ -177,6 +198,20 @@ pub struct AgentResult {
 }
 
 impl AgentResult {
+    /// Validate the invariants that are not type-enforced.
+    ///
+    /// Returns `Ok(())` if all invariants hold, `Err(msg)` otherwise.
+    /// - A failed run MUST carry a FailureReason.
+    pub fn validate_invariant(&self) -> Result<(), String> {
+        if !self.success && self.failure_reason.is_none() {
+            return Err(
+                "AgentResult invariant violated: failure_reason MUST be Some when success = false"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Returns a one-line summary of the result, truncated to 80 characters.
     ///
     /// Uses `.chars().take(80)` to respect Unicode grapheme boundaries rather
@@ -199,5 +234,103 @@ impl AgentResult {
             )
         };
         msg.chars().take(80).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_failure_reason_recoverable() {
+        assert!(FailureReason::ModelError("".into()).is_recoverable());
+        assert!(FailureReason::AuthenticationFailure { provider: "".into(), detail: "".into() }.is_recoverable());
+        assert!(!FailureReason::UsageLimitExceeded.is_recoverable());
+        assert!(!FailureReason::MaxStepsReached.is_recoverable());
+        assert!(!FailureReason::VerificationFailed { gate: "".into(), detail: "".into() }.is_recoverable());
+        assert!(!FailureReason::PermissionDenied { action: "".into(), reason: "".into() }.is_recoverable());
+        assert!(!FailureReason::ConvergenceFailure { nudges: 0, detail: "".into() }.is_recoverable());
+    }
+
+    #[test]
+    fn test_failure_reason_causal_sentence() {
+        let r = FailureReason::ModelError("timeout".into());
+        assert!(r.causal_sentence().contains("timeout"));
+        let r = FailureReason::UsageLimitExceeded;
+        assert!(r.causal_sentence().contains("Usage limit"));
+    }
+
+    #[test]
+    fn test_agent_result_round_trip() {
+        let r = AgentResult {
+            success: true,
+            output: "done".into(),
+            steps: vec![],
+            total_steps: 5,
+            total_tokens: 1000,
+            total_cost: 0.05,
+            duration_ms: 1200,
+            trace_id: "trace-1".into(),
+            run_id: "run-1".into(),
+            model: "gemini-2.0-flash".into(),
+            provider: "gemini".into(),
+            edits_made: vec!["src/main.rs".into()],
+            named_targets_missing: vec![],
+            failure_reason: None,
+            verification: vec![],
+            change_manifest: None,
+            rollback_plan: None,
+        };
+        assert!(r.validate_invariant().is_ok());
+        assert!(r.char_count_aware_summary().contains("Success"));
+    }
+
+    #[test]
+    fn test_agent_result_invariant_violation() {
+        let r = AgentResult {
+            success: false,
+            output: String::new(),
+            steps: vec![],
+            total_steps: 0,
+            total_tokens: 0,
+            total_cost: 0.0,
+            duration_ms: 0,
+            trace_id: String::new(),
+            run_id: String::new(),
+            model: String::new(),
+            provider: String::new(),
+            edits_made: vec![],
+            named_targets_missing: vec![],
+            failure_reason: None,
+            verification: vec![],
+            change_manifest: None,
+            rollback_plan: None,
+        };
+        assert!(r.validate_invariant().is_err());
+    }
+
+    #[test]
+    fn test_agent_result_unicode_truncation() {
+        let r = AgentResult {
+            success: true,
+            output: "✅".repeat(100),
+            steps: vec![],
+            total_steps: 5,
+            total_tokens: 1000,
+            total_cost: 0.05,
+            duration_ms: 1200,
+            trace_id: "trace-1".into(),
+            run_id: "run-1".into(),
+            model: "gemini-2.0-flash".into(),
+            provider: "gemini".into(),
+            edits_made: vec!["src/main.rs".into()],
+            named_targets_missing: vec![],
+            failure_reason: None,
+            verification: vec![],
+            change_manifest: None,
+            rollback_plan: None,
+        };
+        let summary = r.char_count_aware_summary();
+        assert!(summary.chars().count() <= 80);
     }
 }
