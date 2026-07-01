@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Protocol, runtime_checkable
 
-from forge_sdk.harness.profiles import AgentProfile
-from forge_sdk.harness.adaptive import AdaptivePrompt
-from forge_sdk.harness.learning import LearningStore, Episode
-from forge_sdk.harness.engine import EvolutionEngine, StepResult
 from forge_sdk.agents.types import AgentContext, AgentResult
+from forge_sdk.harness.adaptive import AdaptivePrompt
+from forge_sdk.harness.engine import EvolutionEngine, StepResult
+from forge_sdk.harness.learning import Episode, LearningStore
+from forge_sdk.harness.profiles import AgentProfile
+
+
+@runtime_checkable
+class Agent(Protocol):
+    """Duck-typed protocol for any agent that can run tasks."""
+
+    def run(self, context: AgentContext) -> AgentResult:
+        ...
 
 
 @dataclass
@@ -60,6 +69,7 @@ class HarnessRunner:
         store: LearningStore | None = None,
         engine: EvolutionEngine | None = None,
         agent_fn: Callable[[AgentContext, str], AgentResult] | None = None,
+        agent: Agent | None = None,
         base_path: str | Path = ".harness",
     ) -> None:
         self._base = Path(base_path)
@@ -70,11 +80,37 @@ class HarnessRunner:
         self._prompt = prompt or AdaptivePrompt(self._profile)
         self._store = store or LearningStore(self._base / "memory")
         self._engine = engine or EvolutionEngine(self._store)
-        self._agent_fn = agent_fn  # The actual agent execution function
+        self._agent_fn = agent_fn
+        self._agent = agent
 
         # Run history
         self._runs: list[RunResult] = []
         self._current_generation = self._profile.generation
+        self._validation_set: list[str] | None = None
+
+    @classmethod
+    def with_react_agent(
+        cls,
+        profile: AgentProfile | None = None,
+        tools: Any = None,
+        base_path: str | Path = ".harness",
+        **agent_kwargs: Any,
+    ) -> HarnessRunner:
+        """Create a HarnessRunner wired to a pre-configured ReactAgent."""
+        from forge_sdk.agents.react import ReactAgent
+        from forge_sdk.harness.profiles import AgentProfile as AP
+
+        resolved_profile = profile or AP()
+        agent = ReactAgent(
+            model=agent_kwargs.pop("model", None),
+            tools=tools or [],
+            **agent_kwargs,
+        )
+        return cls(
+            profile=resolved_profile,
+            agent=agent,
+            base_path=base_path,
+        )
 
     def run(
         self,
@@ -97,13 +133,12 @@ class HarnessRunner:
         self._prompt.set_context("task_type", self._classify_task(task))
         system_prompt = self._prompt.compose(task)
 
-        # Execute via agent function
-        if self._agent_fn is None:
-            # No agent function — return a placeholder
+        # Execute via agent or agent function
+        if self._agent is None and self._agent_fn is None:
             result = RunResult(
                 task=task,
                 success=False,
-                output="No agent function configured. Set agent_fn in HarnessRunner.",
+                output="No agent or agent_fn configured. Set agent or agent_fn in HarnessRunner.",
                 episode_id=episode_id,
                 duration_ms=(time.time() - start_time) * 1000,
             )
@@ -116,7 +151,10 @@ class HarnessRunner:
                 cwd=str(self._base),
                 max_steps=max_steps or self._profile.max_steps,
             )
-            agent_result = self._agent_fn(context, system_prompt)
+            if self._agent is not None:
+                agent_result = self._agent.run(context)
+            else:
+                agent_result = self._agent_fn(context, system_prompt)  # type: ignore[union-attr]
 
             result = RunResult(
                 task=task,
@@ -164,10 +202,16 @@ class HarnessRunner:
         self._runs.append(result)
         return result
 
+    def set_validation_set(self, tasks: list[str]) -> None:
+        self._validation_set = tasks
+
     def evolve(self) -> StepResult:
         """Run one evolution step."""
         episodes = self._store.get_episodes(limit=20)
-        return self._engine.step(self._profile, self._prompt, episodes)
+        kwargs = {}
+        if self._validation_set is not None:
+            kwargs["validation_tasks"] = self._validation_set
+        return self._engine.step(self._profile, self._prompt, episodes, **kwargs)
 
     def evolve_loop(
         self,

@@ -18,11 +18,10 @@ from __future__ import annotations
 
 import ast
 import difflib
-import re
 from pathlib import Path
 from typing import Any
 
-from forge_sdk.tools.types import ToolSpec, ToolResult
+from forge_sdk.tools.types import ToolResult, ToolSpec
 
 
 def _make_diff(old: str, new: str, filename: str = "") -> str:

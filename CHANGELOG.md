@@ -3,6 +3,43 @@
 All notable changes to forge-sdk are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.6.0] - 2026-06-30
+
+Named-target coverage detector, INV-201 verification pipeline completion,
+held-out validation gate, agent_fn wiring into v5 harness, plus the
+phantom-edit fix. 159 tests passing.
+
+### Added
+- **Named-target coverage detector** (`agents/react.py`): prototypes the
+  mitigation flagged as open work in the 0.5.2 entry below. When an agent
+  finishes claiming success, `_missing_named_targets()` diffs the file
+  paths the task literally named as edit targets against what was actually
+  edited. Advisory only — a mismatch appends a visible `[REVIEW FLAG]` to
+  the output and populates the new `AgentResult.named_targets_missing`
+  field. (#31)
+- **INV-201 verification pipeline** (`agents/react.py`, `verifiers/`):
+  formal pipeline with L2 syntactic → L4 static/AST → L5 empirical
+  (build/test) → L6 spec-conformance → INV-207 semantic alignment gates.
+  SemanticCheck and spec_conformance_check wired into ReactAgent finish
+  handler; all evidence collected regardless of individual failures. (#20)
+- **Held-out validation gate** (`harness/gate.py`): `ValidationGate` class
+  implementing RSEA-style strict keep-better gating. Mutations committed
+  only when post-mutation validation score > pre-mutation baseline (not
+  ≥). Includes snapshot/rollback for prompt fragments and knowledge. (#33)
+- **Agent function wiring** (`harness/runner.py`): HarnessRunner now
+  accepts `Agent` (duck-typed) or `agent_fn` callable, with
+  `with_react_agent()` classmethod factory. (#34)
+
+### Fixed
+- **Phantom edits from blocked/failed tool calls** (`agents/react.py`):
+  found live — a `forge run` research task correctly hit the L2
+  network-egress block on a `curl` attempt, but the blocked command's own
+  stderr redirect (`2>/dev/null`) matched the shell write-pattern regex as
+  a file write. Edit extraction now short-circuits on `Tool failed:`
+  observations and excludes numeric-fd redirects (`N>`). (#32)
+- **Import bugs**: fixed `forge_sdk.harness.security` → `forge_sdk.security`
+  in engine.py; removed unused imports across test files.
+
 ## [0.5.2] - 2026-06-30
 
 Trust-gate hardening. Found via hands-on dogfooding (a real concurrent

@@ -9,8 +9,8 @@ from __future__ import annotations
 import shlex
 import subprocess
 
-from forge_sdk.tools import ToolResult, ToolSpec
 from forge_sdk.security import _check_command_safety, _check_path_safety
+from forge_sdk.tools import ToolResult, ToolSpec
 
 
 async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:

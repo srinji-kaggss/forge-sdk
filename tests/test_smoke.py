@@ -8,22 +8,19 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from forge_sdk.audit import AuditLog
 from forge_sdk.config import ForgeConfig
 from forge_sdk.eval.harness import default_extractor
 from forge_sdk.models.registry import registry
 from forge_sdk.models.types import ModelChunk, ModelResponse, Usage
-from forge_sdk.tools import ToolResult, ToolSpec
+from forge_sdk.tools import ToolResult
 from forge_sdk.tools.filesystem import FILE_TOOLS
 from forge_sdk.tools.registry import ToolRegistry
 from forge_sdk.tools.search import SEARCH_TOOLS
 from forge_sdk.tools.shell import SHELL_TOOL
 from forge_sdk.tracing.span import SpanKind, SpanStatus
 from forge_sdk.tracing.tracer import Tracer
-from forge_sdk.verifiers import VerificationConfig, Verifier, VerificationStatus
-
+from forge_sdk.verifiers import VerificationConfig, VerificationStatus, Verifier
 
 # ── Model Registry ──
 
@@ -441,8 +438,8 @@ def test_semantic_check_no_model():
 
 def test_semantic_check_pass():
     """SemanticCheck parses a passing LLM response correctly."""
-    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
     from forge_sdk.models.types import ModelResponse, Usage
+    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
 
     class MockModel:
         def complete(self, messages, **kwargs):
@@ -466,8 +463,8 @@ def test_semantic_check_pass():
 
 def test_semantic_check_fail():
     """SemanticCheck parses a failing LLM response correctly."""
-    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
     from forge_sdk.models.types import ModelResponse, Usage
+    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
 
     class MockModel:
         def complete(self, messages, **kwargs):
@@ -491,8 +488,8 @@ def test_semantic_check_fail():
 
 def test_semantic_check_parse_failure():
     """SemanticCheck handles unparseable LLM response gracefully."""
-    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
     from forge_sdk.models.types import ModelResponse, Usage
+    from forge_sdk.verifiers import SemanticCheck, VerificationStatus
 
     class MockModel:
         def complete(self, messages, **kwargs):
@@ -558,8 +555,7 @@ def test_false_green_zero_edits():
 def test_false_green_verification_fails_with_edit_task():
     """When verification fails and task requires edits, success must be False."""
     from forge_sdk.agents.types import AgentResult
-    from forge_sdk.verifiers import VerificationEvidence
-    from forge_sdk.verifiers import VerificationStatus
+    from forge_sdk.verifiers import VerificationEvidence, VerificationStatus
 
     evidence = [VerificationEvidence(
         gate_name="syntactic",

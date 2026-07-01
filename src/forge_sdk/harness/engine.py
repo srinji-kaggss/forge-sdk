@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from forge_sdk.harness.gate import ValidationGate
+
+from forge_sdk.harness.adaptive import AdaptivePrompt
+from forge_sdk.harness.learning import Episode, Knowledge, LearningStore
 from forge_sdk.harness.profiles import AgentProfile
-from forge_sdk.harness.adaptive import AdaptivePrompt, PromptFragment
-from forge_sdk.harness.learning import LearningStore, Episode, Knowledge
 from forge_sdk.security import contain_untrusted_text
 
 
@@ -25,6 +30,9 @@ class StepResult:
     fragments_added: int = 0
     fragments_removed: int = 0
     knowledge_added: int = 0
+    gated: bool = False
+    validation_score_before: float = 0.0
+    validation_score_after: float = 0.0
 
 
 class EvolutionEngine:
@@ -52,12 +60,37 @@ class EvolutionEngine:
         self._store = learning_store
         self._mutate_fn = mutate_fn  # Optional LLM-driven mutation function
         self._history: list[StepResult] = []
+        self._validation_gate: ValidationGate | None = None
+
+    def set_validation_gate(self, gate: ValidationGate) -> None:
+        self._validation_gate = gate
+
+    def _snapshot_state(
+        self,
+        prompt: AdaptivePrompt,
+        store: LearningStore,
+    ) -> dict[str, Any]:
+        return {
+            "fragments": copy.deepcopy(prompt._fragments),
+            "knowledge": copy.deepcopy(store._knowledge),
+        }
+
+    def _restore_state(
+        self,
+        prompt: AdaptivePrompt,
+        store: LearningStore,
+        snapshot: dict[str, Any],
+    ) -> None:
+        prompt._fragments = snapshot["fragments"]
+        store._knowledge = snapshot["knowledge"]
+        store._save_knowledge()
 
     def step(
         self,
         profile: AgentProfile,
         prompt: AdaptivePrompt,
         recent_episodes: list[Episode] | None = None,
+        validation_tasks: list[str] | None = None,
     ) -> StepResult:
         """Run one evolution step.
 
@@ -69,6 +102,16 @@ class EvolutionEngine:
 
         if not recent_episodes:
             return StepResult(mutated=False, summary="No episodes to analyze")
+
+        # --- Gate setup: snapshot + pre-mutation evaluation ---
+        gating_active = self._validation_gate is not None and validation_tasks is not None
+        if gating_active:
+            score_before = self._validation_gate.evaluate(validation_tasks)
+            self._validation_gate.set_baseline(score_before)
+            snapshot = self._snapshot_state(prompt, self._store)
+        else:
+            score_before = 0.0
+            snapshot = None
 
         mutations: list[dict[str, Any]] = []
         fragments_added = 0
@@ -167,6 +210,26 @@ class EvolutionEngine:
                 },
             })
 
+        # --- Gate check: rollback if performance doesn't improve ---
+        gated = False
+        val_before = 0.0
+        val_after = 0.0
+        if gating_active:
+            score_after = self._validation_gate.evaluate(validation_tasks)
+            val_before = score_before
+            val_after = score_after
+            gated = True
+            if not self._validation_gate.gate(
+                StepResult(mutated=bool(mutations), summary="", mutations=mutations),
+                score_after,
+            ):
+                self._restore_state(prompt, self._store, snapshot)
+                mutations = []
+                fragments_added = 0
+                fragments_removed = 0
+                knowledge_added = 0
+                score_delta = 0.0
+
         result = StepResult(
             mutated=bool(mutations),
             summary=self._build_summary(mutations, failures, successes, new_score),
@@ -175,6 +238,9 @@ class EvolutionEngine:
             fragments_added=fragments_added,
             fragments_removed=fragments_removed,
             knowledge_added=knowledge_added,
+            gated=gated,
+            validation_score_before=val_before,
+            validation_score_after=val_after,
         )
 
         self._history.append(result)

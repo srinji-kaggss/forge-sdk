@@ -18,9 +18,9 @@ Tool categories:
 
 from forge_sdk.tools.advanced.code_intel import CODE_INTEL_TOOLS
 from forge_sdk.tools.advanced.edit_intel import EDIT_INTEL_TOOLS
-from forge_sdk.tools.advanced.verify_intel import VERIFY_INTEL_TOOLS
 from forge_sdk.tools.advanced.knowledge_intel import KNOWLEDGE_INTEL_TOOLS
 from forge_sdk.tools.advanced.memory_intel import MEMORY_INTEL_TOOLS
+from forge_sdk.tools.advanced.verify_intel import VERIFY_INTEL_TOOLS
 
 ADVANCED_TOOLS = (
     CODE_INTEL_TOOLS

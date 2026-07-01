@@ -10,8 +10,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from forge_sdk.tools import ToolResult, ToolSpec
 from forge_sdk.security import _check_path_safety
+from forge_sdk.tools import ToolResult, ToolSpec
 
 
 async def _grep(pattern: str, path: str = ".", include: str = "") -> ToolResult:

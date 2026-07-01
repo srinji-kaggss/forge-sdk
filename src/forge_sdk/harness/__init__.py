@@ -17,10 +17,11 @@ Usage:
     result = runner.run("Fix the bug in main.py")
 """
 
-from forge_sdk.harness.profiles import AgentProfile
 from forge_sdk.harness.adaptive import AdaptivePrompt
-from forge_sdk.harness.learning import LearningStore, Episode, Knowledge
 from forge_sdk.harness.engine import EvolutionEngine, StepResult
+from forge_sdk.harness.gate import ValidationGate
+from forge_sdk.harness.learning import Episode, Knowledge, LearningStore
+from forge_sdk.harness.profiles import AgentProfile
 from forge_sdk.harness.runner import HarnessRunner
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "Knowledge",
     "EvolutionEngine",
     "StepResult",
+    "ValidationGate",
     "HarnessRunner",
 ]

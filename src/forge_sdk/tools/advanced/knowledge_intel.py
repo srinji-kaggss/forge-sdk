@@ -15,12 +15,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import subprocess
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from forge_sdk.tools.types import ToolSpec, ToolResult
+from forge_sdk.tools.types import ToolResult, ToolSpec
 
 
 async def web_search(query: str, limit: int = 5) -> ToolResult:

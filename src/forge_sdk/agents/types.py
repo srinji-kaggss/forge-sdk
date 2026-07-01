@@ -7,13 +7,12 @@ INV-202: success = resolution (verification passed), not submission.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 # Forward reference to avoid circular import
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from forge_sdk.verifiers import VerificationEvidence
+    pass
 
 
 @dataclass

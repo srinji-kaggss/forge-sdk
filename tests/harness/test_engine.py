@@ -5,12 +5,9 @@ Run with: pytest tests/harness/test_engine.py -v
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 import pytest
 
-from forge_sdk.harness.adaptive import AdaptivePrompt, PromptFragment
+from forge_sdk.harness.adaptive import AdaptivePrompt
 from forge_sdk.harness.engine import EvolutionEngine
 from forge_sdk.harness.learning import Episode, LearningStore
 from forge_sdk.harness.profiles import AgentProfile

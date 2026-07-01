@@ -7,7 +7,6 @@ The mesh is consulted on every call — model routing is dynamic.
 from __future__ import annotations
 
 from forge_sdk.models.port import ModelPort
-from forge_sdk.models.registry import registry
 from forge_sdk.models.types import ModelChunk, ModelResponse
 
 

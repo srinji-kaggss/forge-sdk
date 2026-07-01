@@ -22,12 +22,15 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from forge_sdk.agents.types import AgentContext, AgentResult, AgentStep
+from forge_sdk.verifiers import SemanticCheck as _SemanticCheck
 from forge_sdk.verifiers import VerificationEvidence, VerificationStatus
+from forge_sdk.verifiers import spec_conformance_check as _spec_conformance_check
 
 # Issue #23: AgentContext.cwd was recorded but never threaded into the
 # actual tool-call boundary -- every filesystem/shell/search/verify tool
@@ -91,13 +94,7 @@ _READ_ONLY_SCOPED_TAIL = re.compile(
     re.IGNORECASE,
 )
 
-# Partial-completion-over-claim mitigation (forge-sdk v0.5.2, see
-# blackbox2/PLAYBOOK-forge-fanout.md §9): a task naming N files to edit can
-# have an agent silently complete fewer than N and still report success,
-# because the zero-edits safety net above only fires when N == 0. This is a
-# DETECTION heuristic, not a hard gate — false positives are expected on
-# prompts that merely mention a file for read-only context, so it only ever
-# downgrades a SUCCESS to a flagged-for-review SUCCESS, never to a failure.
+# Advisory partial-completion detection (blackbox2/PLAYBOOK-forge-fanout.md §9) — downgrades a SUCCESS to flagged-for-review, never to a failure.
 _FILE_PATH_TOKEN = re.compile(r"\b[\w][\w./-]*\.[A-Za-z]{1,5}\b")
 _TARGET_EXCLUDE_CONTEXT = re.compile(
     r"\b(do\s+not\s+(?:edit|modify|write|change|touch)|"
@@ -112,6 +109,55 @@ _TARGET_ACTION_CONTEXT = re.compile(
     r"edit|modify|insert|change)\b",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True)
+class _FinalGateState:
+    verification_passed: bool
+    build_gate_ran: bool
+    has_edits: bool
+    task_implies_edits: bool
+
+
+_FAILURE_GATES: tuple[tuple[Callable[[_FinalGateState], bool], str], ...] = (
+    (lambda g: not g.verification_passed and g.build_gate_ran,
+     "Build/verify command failed on the files written — see verification evidence."),
+    (lambda g: not g.verification_passed and g.task_implies_edits,
+     "Verification failed for a task that requires code changes."),
+    (lambda g: not g.has_edits and g.task_implies_edits,
+     "Agent completed without modifying any files. Task implies code changes were expected."),
+)
+
+
+def _extract_write_path(action_input: dict) -> list[str]:
+    path = action_input.get("path", "")
+    return [path] if path else []
+
+
+# N> (e.g. 2>) fd redirects excluded — those are stderr-suppression, not writes.
+_SHELL_WRITE_PATTERNS = (
+    r"(?<!\d)>\s*(\S+)",
+    r"tee\s+(\S+)",
+    r"cp\s+\S+\s+(\S+)",
+    r"mv\s+\S+\s+(\S+)",
+    r"mkdir\s+.*",
+    r"touch\s+(\S+)",
+    r"sed\s+.*\s*>\s*(\S+)",
+)
+
+
+def _extract_shell_write_targets(action_input: dict) -> list[str]:
+    cmd = action_input.get("command", "")
+    hits = (m for pattern in _SHELL_WRITE_PATTERNS for m in re.findall(pattern, cmd))
+    return [m for m in hits if m != "/dev/null"]
+
+
+_EDIT_EXTRACTORS: dict[str, Callable[[dict], list[str]]] = {
+    "write_file": _extract_write_path,
+    "create_file": _extract_write_path,
+    "shell": _extract_shell_write_targets,
+    "run_command": _extract_shell_write_targets,
+}
 
 log = logging.getLogger(__name__)
 
@@ -467,12 +513,14 @@ class ReactAgent:
         verify_command: str | None = None,
         auto_verify: bool = True,
         verify_timeout_seconds: float = 120.0,
+        semantic_check: _SemanticCheck | None = None,
     ) -> None:
         self._model = model
         self._tools = tools
         self._tracer = tracer
         self._audit = audit
         self._verifier = verifier
+        self._semantic_check = semantic_check
         self._guard = loop_guard or LoopGuard()
         self._max_retries = max_retries
         self._context = ContextManager(max_tokens=max_tokens)
@@ -617,44 +665,11 @@ class ReactAgent:
     def _extract_edits_from_observation(
         self, action: str, action_input: dict, observation: str
     ) -> list[str]:
-        """Extract file paths modified by a tool call from its observation.
-
-        Found via a live probe (v0.5.2 follow-up): a blocked/failed shell
-        command (e.g. curl killed by the L2 network-egress block) still got
-        scanned for write-patterns, and its stderr redirect ("2>/dev/null")
-        matched the bare `>` pattern as if it were a real file write —
-        producing a phantom "1 file(s) changed" for a command that never
-        ran. `ToolResult.as_message` always prefixes a failure with
-        "Tool failed: " (tools/types.py), so that's the one reliable signal
-        that nothing on disk actually changed, regardless of what the
-        attempted command string looks like.
-        """
+        """Files a tool call actually wrote — "Tool failed: " means none did."""
         if observation.startswith("Tool failed:"):
             return []
-
-        edits: list[str] = []
-        write_tools = {"write_file", "create_file"}
-        shell_tools = {"shell", "run_command"}
-
-        if action in write_tools:
-            path = action_input.get("path", "")
-            if path:
-                edits.append(path)
-        elif action in shell_tools:
-            cmd = action_input.get("command", "")
-            write_patterns = [
-                r"(?<!\d)>\s*(\S+)",  # exclude N> (e.g. 2>) fd redirects
-                r"tee\s+(\S+)",
-                r"cp\s+\S+\s+(\S+)",
-                r"mv\s+\S+\s+(\S+)",
-                r"mkdir\s+.*",
-                r"touch\s+(\S+)",
-                r"sed\s+.*\s*>\s*(\S+)",
-            ]
-            for pattern in write_patterns:
-                matches = re.findall(pattern, cmd)
-                edits.extend(m for m in matches if m != "/dev/null")
-        return edits
+        extractor = _EDIT_EXTRACTORS.get(action)
+        return extractor(action_input) if extractor else []
 
     def _task_implies_edits(self, task: str) -> bool:
         """Heuristic: does the task prompt imply code/file changes are expected?
@@ -679,51 +694,39 @@ class ReactAgent:
         return False
 
     @staticmethod
+    def _nearest_context(text: str) -> tuple[int, int]:
+        exclude = list(_TARGET_EXCLUDE_CONTEXT.finditer(text))
+        action = list(_TARGET_ACTION_CONTEXT.finditer(text))
+        return (
+            exclude[-1].end() if exclude else -1,
+            action[-1].end() if action else -1,
+        )
+
+    @staticmethod
     def _named_edit_targets(task: str, window: int = 80) -> list[str]:
-        """Extract file paths the task names as edit targets (not read-only mentions).
+        """Files the task names as real edit targets, not read-only mentions.
 
-        For each file-path-shaped token, looks at the `window` characters
-        immediately before it — but never further back than the END of the
-        *previous* file-path mention. Without that floor, a verb already
-        spent on an earlier path ("Create tests/test_foo.py with a test for
-        foo.py") would wrongly re-attach to a later, unrelated mention of a
-        different file in the same sentence; restricting the window to
-        "since the last file mention" means a later path needs its OWN
-        verb in between to count.
-
-        If the nearest matching context in that window is an exclusion
-        phrase ("do not modify", "itself", "reference", ...), the mention is
-        read-only context and is skipped. If the nearest match is an action
-        verb ("create", "remove", "update", ...), it's a real target. No
-        match, or a tie, → skipped (conservative: a missed target is far
-        cheaper than a false-positive "you forgot a file").
+        A verb only claims the file mention immediately after it — the
+        window floors at the previous file mention's end, so a used-up verb
+        can't reattach to a later, unrelated file in the same sentence.
         """
-        targets: list[str] = []
-        prev_path_end = 0
+        targets, prev_end = [], 0
         for match in _FILE_PATH_TOKEN.finditer(task):
-            start = max(prev_path_end, match.start() - window)
-            preceding = task[start:match.start()]
-            exclude_matches = list(_TARGET_EXCLUDE_CONTEXT.finditer(preceding))
-            action_matches = list(_TARGET_ACTION_CONTEXT.finditer(preceding))
-            nearest_exclude = exclude_matches[-1].end() if exclude_matches else -1
-            nearest_action = action_matches[-1].end() if action_matches else -1
+            preceding = task[max(prev_end, match.start() - window):match.start()]
+            nearest_exclude, nearest_action = ReactAgent._nearest_context(preceding)
             if nearest_action > nearest_exclude:
                 targets.append(match.group(0))
-            prev_path_end = match.end()
+            prev_end = match.end()
         return targets
 
     @classmethod
     def _missing_named_targets(cls, task: str, all_edits: list[str]) -> list[str]:
-        """Named edit targets from the task with no matching entry in all_edits."""
-        edited_names = {Path(e).name.lower() for e in all_edits}
-        edited_full = {e.lower() for e in all_edits}
-        missing = []
-        for target in cls._named_edit_targets(task):
-            t_lower = target.lower()
-            if t_lower in edited_full or Path(target).name.lower() in edited_names:
-                continue
-            missing.append(target)
-        return missing
+        """Named targets absent from all_edits — advisory, flags for human review."""
+        edited = {e.lower() for e in all_edits} | {Path(e).name.lower() for e in all_edits}
+        return [
+            t for t in cls._named_edit_targets(task)
+            if t.lower() not in edited and Path(t).name.lower() not in edited
+        ]
 
     def _detect_verify_command(self, cwd: str, edited_files: list[str]) -> str | None:
         """Issue #20: pick a real build/test command for whatever project
@@ -761,7 +764,7 @@ class ReactAgent:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(), timeout=self._verify_timeout_seconds
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 await proc.wait()
                 return VerificationEvidence(
@@ -851,6 +854,35 @@ class ReactAgent:
                     raise
         raise last_error
 
+    def _run_semantic_gate(
+        self,
+        task: str,
+        output: str,
+        all_edits: list[str],
+    ) -> VerificationEvidence | None:
+        if not self._semantic_check:
+            return None
+        if not all_edits:
+            return None
+        if not output.strip():
+            return None
+        if not self._semantic_check.applies():
+            return None
+        solution_summary = f"Modified {len(all_edits)} file(s): {', '.join(all_edits)}. Output: {output[:500]}"
+        return self._semantic_check.execute(
+            task_intent=task,
+            solution_summary=solution_summary,
+            solution_files=all_edits,
+        )
+
+    def _run_spec_conformance_gate(
+        self,
+        task: str,
+        output: str,
+        all_edits: list[str],
+    ) -> VerificationEvidence:
+        return _spec_conformance_check(task, all_edits, output)
+
     async def arun(self, context: AgentContext) -> AgentResult:
         """Async core — the canonical execution loop with observability."""
         run_start = time.monotonic()
@@ -921,6 +953,8 @@ class ReactAgent:
             except Exception as e:
                 log.error("Model call failed after retries: %s", e)
                 break
+
+            response = replace(response, content=response.content or "")  # some providers return None on tool-only turns
 
             # Track tokens
             if hasattr(response, "usage"):
@@ -1133,6 +1167,23 @@ class ReactAgent:
                         build_gate_ran = True
                         verification.append(await self._run_verify_command(verify_cmd, context.cwd))
 
+                # INV-207: semantic alignment check — catches shallow edits
+                semantic_evidence = self._run_semantic_gate(
+                    task=context.task,
+                    output=output,
+                    all_edits=all_edits,
+                )
+                if semantic_evidence:
+                    verification.append(semantic_evidence)
+
+                # L6: spec-conformance check — task-required artifacts in edits/output
+                spec_evidence = self._run_spec_conformance_gate(
+                    task=context.task,
+                    output=output,
+                    all_edits=all_edits,
+                )
+                verification.append(spec_evidence)
+
                 verification_passed = all(
                     v.status == VerificationStatus.PASSED for v in verification
                 ) if verification else True
@@ -1140,42 +1191,28 @@ class ReactAgent:
                 metrics.verification_passed = verification_passed
                 metrics.edits_made = len(all_edits)
 
-                # False-green check
-                success = verification_passed
-                failure_reason = ""
+                # False-green check: first matching gate in _FAILURE_GATES wins.
+                gate_state = _FinalGateState(
+                    verification_passed=verification_passed,
+                    build_gate_ran=build_gate_ran,
+                    has_edits=bool(all_edits),
+                    task_implies_edits=self._task_implies_edits(context.task),
+                )
+                failure_reason = next(
+                    (reason for gate, reason in _FAILURE_GATES if gate(gate_state)), ""
+                )
+                success = not failure_reason
 
-                if not verification_passed and build_gate_ran:
-                    success = False
-                    failure_reason = "Build/verify command failed on the files written — see verification evidence."
-                elif not verification_passed and self._task_implies_edits(context.task):
-                    success = False
-                    failure_reason = "Verification failed for a task that requires code changes."
-                elif len(all_edits) == 0 and self._task_implies_edits(context.task):
-                    success = False
-                    failure_reason = (
-                        "Agent completed without modifying any files. "
-                        "Task implies code changes were expected."
-                    )
-                elif all_edits and not build_gate_ran:
-                    # Honest about the gap (CLAUDE.md: unknowns stay labeled
-                    # unknown) -- files changed but no build/test command was
-                    # available for this project type, so this SUCCESS was
-                    # never empirically verified against the files on disk.
+                if success and all_edits and not build_gate_ran:
                     output = (
                         f"{output}\n\n[Note: {len(all_edits)} file(s) changed but no build/verify "
                         f"command was available for this project type — SUCCESS reflects the agent's "
                         f"own report, not an empirical check.]"
                     )
-
-                if not success and failure_reason:
+                if failure_reason:
                     output = f"{output}\n\n[Failure reason: {failure_reason}]"
 
-                # v0.5.2: partial-completion-over-claim detection. Only meaningful
-                # once ≥1 edit happened — the zero-edits gate above already covers
-                # the case where nothing was touched at all. Advisory only: this
-                # heuristic has known false positives (see _named_edit_targets
-                # docstring), so it flags a SUCCESS for human review instead of
-                # silently flipping it to a failure.
+                # Advisory only — see _missing_named_targets docstring.
                 named_targets_missing: list[str] = []
                 if success and all_edits:
                     named_targets_missing = self._missing_named_targets(context.task, all_edits)

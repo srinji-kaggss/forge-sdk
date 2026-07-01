@@ -8,8 +8,8 @@ Quick start:
         tools.register(t)
 """
 
-from forge_sdk.tools.types import ToolResult, ToolSpec
 from forge_sdk.tools.registry import ToolRegistry
+from forge_sdk.tools.types import ToolResult, ToolSpec
 
 
 def get_default_tools() -> list[ToolSpec]:
