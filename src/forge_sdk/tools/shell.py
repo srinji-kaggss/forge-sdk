@@ -1,16 +1,40 @@
 """Shell execution tool — runs commands in a subprocess.
 
 v0.5.1: Defense-in-depth security via forge_sdk.security module.
-No shell=True fallback. Allowlist-based path checking. Network egress blocked.
+Allowlist-based path checking. Network egress blocked.
+
+v0.6.1: found live — argv-mode execution (shlex.split + shell=False) silently
+no-ops on ANY compound command ("cd X && real_cmd", pipes, ";"-chains): macOS
+ships a real standalone /usr/bin/cd binary, so shlex.split("cd X && cmd")
+produces ['cd', 'X', '&&', 'cmd', ...] and subprocess.run(shell=False) happily
+executes /usr/bin/cd with all of '&&', 'cmd', ... as ignored extra arguments —
+returning EXIT CODE 0 with EMPTY OUTPUT. real_cmd never ran, and the agent got
+a false success signal, not an honest error. This is strictly worse than the
+shell=True path it replaced.
+
+_check_command_safety() below runs a regex scan over the RAW command string,
+before any shlex/shell parsing — so it enforces the same L2/L3/L4 blocklist
+regardless of how the command is subsequently executed. Routing compound
+commands through a real shell (`/bin/sh -c`) therefore does not weaken that
+check; it only makes shell operators actually mean what they say instead of
+silently doing nothing. Simple, operator-free commands still run via the
+original shlex/argv path unchanged.
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 
 from forge_sdk.security import _check_command_safety, _check_path_safety
 from forge_sdk.tools import ToolResult, ToolSpec
+
+# Characters/sequences that only mean something to a real shell — a raw
+# argv exec (shell=False) either ignores them as literal tokens or, worse,
+# hands them to a standalone binary that shares a builtin's name (cd, echo)
+# and silently no-ops. Detected on the RAW string, same as _check_command_safety.
+_SHELL_OPERATOR_PATTERN = re.compile(r"&&|\|\||[|;<>]|\$\(|`|\bcd\s")
 
 
 async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
@@ -44,22 +68,27 @@ async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
 
     logging.getLogger("forge.tools.shell").warning("SHELL: %s (cwd=%s)", command, cwd)
 
-    # Parse with shlex — NEVER fall back to shell=True
-    try:
-        args = shlex.split(command)
-    except ValueError as exc:
-        return ToolResult(
-            success=False,
-            output="",
-            error=f"Command parse failed (unbalanced quotes): {exc}. "
-            f"Fix the quoting. shell=True fallback is disabled for security.",
-            metadata={"command": command, "blocked": True},
-        )
+    # Compound commands (&&, |, ;, cd-prefix, redirects, substitution) need a
+    # real shell to mean what they say — see the module docstring. The security
+    # boundary is _check_command_safety() above, which already scanned the raw
+    # string; this only decides HOW the (already-approved) command executes.
+    if _SHELL_OPERATOR_PATTERN.search(command):
+        popen_args: list[str] | str = ["/bin/sh", "-c", command]
+    else:
+        try:
+            popen_args = shlex.split(command)
+        except ValueError as exc:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Command parse failed (unbalanced quotes): {exc}. Fix the quoting.",
+                metadata={"command": command, "blocked": True},
+            )
 
     try:
         result = subprocess.run(
-            args,
-            shell=False,  # NEVER shell=True
+            popen_args,
+            shell=False,  # even the compound-command path: explicit argv to /bin/sh -c, not shell=True
             capture_output=True,
             text=True,
             timeout=timeout,
