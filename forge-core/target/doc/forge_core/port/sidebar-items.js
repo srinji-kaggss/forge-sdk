@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ModelError"],"struct":["ModelResponse","ToolCall","ToolResult","ToolSpec"],"trait":["ModelPort","ToolHandler"]};

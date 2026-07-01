@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AgentEvent"],"struct":["ActionEvent","ConvergenceEvent","Correlation","DecisionEvent","FileEditEvent","ObservationEvent","PermissionGateEvent","RunEndEvent","RunErrorEvent","RunStartEvent","StateUpdateEvent","ThinkEvent","TokenUsageEvent","VerificationEvent"]};
