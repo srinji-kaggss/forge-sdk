@@ -3,6 +3,48 @@
 All notable changes to forge-sdk are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [1.0.0] — IN SPEC (Rust Port)
+
+**Status:** Specification finalized at `docs/FORGE-RUST-TUI-SPEC.md` (1,283 lines, 55 sections). Implementation pending Phases 1-6.
+
+### Architecture — Full Workspace
+
+- **forge-core:** Zero-dependency library with 13-event taxonomy, 5-gate verification pipeline, PermissionGate with anti-slop strategies, L0-L5 DoctorEngine, SessionStore trait, LoopGuard with 5 break paths, FailureReason enum (7 variants)
+- **forge-cli:** clap-based CLI with `run`, `doctor`, `session`, `eval`, `audit`, `config` subcommands. TextRenderer (streaming ANSI) + NDJSONRenderer (machine pipe)
+- **forge-tui:** Spine-based terminal UI (separate binary). crossterm + ratatui. Timeline/Edits/Verifications/Summary views. NOT a chat stream — browsable agent trace
+- **forge-gemini:** google-genai-rs v0.3.0 wrapper implementing ModelPort trait
+- **forge-ollama/forge-openai:** reqwest REST → ModelPort impl
+- **forge-mcp:** MCP rust-sdk v1.7.0 integration
+- **forge-harness:** Eval harness port from Python
+
+### Hardening (7 Packs Applied)
+
+- **FORGE_FEEDBACK.md fixes:** Shell-tool output-capture bug fixed (Command::new() never string parsing), byte-length vs char-length with .chars().take(n), independent verification in TUI detail view, config surface (H16) via `forge config init/show/set`
+- **excellent_code_framework:** All 10 proof obligations mapped (grounding, type safety, correctness, invariant, boundary, resource, security, observability, falsifiability, locality)
+- **human_like_corpus_model_os:** 6 execution rules (read-state-before-action, preserve-raw-data, emit-manifest-for-outputs, etc.)
+- **ai_semantic_rag_pack:** DQS formula, strategy registry, stable finding IDs on VerificationEvidence
+- **okf_dev_role_delta_pack-2:** Role lattice (human=SH, agent=AI, audit=reviewer), deterministic Markov-style DoctorEngine
+- **debuggable_codebase_okf_2026:** Every break sets FailureReason, every event has Correlation, reversible ChangeManifest
+- **excellent_docs_okf_ai_codebase_pack:** Topological doc model with crate dependency graph
+
+### Key Features
+
+- 13 AgentEvent discriminators (RunStart, RunEnd, RunError, Think, Act, Observe, Verify, FileEdit, TokenUsage, StateUpdate, Decide, Converge, PermissionGate)
+- 7 FailureReason variants (ModelError, UsageLimitExceeded, ConvergenceFailure, MaxStepsReached, VerificationFailed, PermissionDenied, AuthenticationFailure)
+- PermissionGate with Interactive/Yolo/Plan modes + 4 anti-slop hard gates (always active)
+- 5-gate verification pipeline (SyntaxCheck → LintAnalysis → TestExecution → PropertyCheck → FormalBound)
+- L0-L5 Doctor escalation (Runtime → Config → Auth → Connectivity → WriteTest → ModelSmoke)
+- Session checkpointing with FileSessionStore (~/.forge/checkpoints/)
+- ChangeManifest on RunEndEvent for CI/CD integration
+- Anti-duplication boundary vs lgwks_ui (inspired by not copying spine-based design language)
+
+### Anti-Duplication
+
+- forge-tui is a separate binary (not inline in forge-cli)
+- Palette uses different hex values from lgwks_ui
+- AppState is specific to agent supervision, not research browsing
+- Code is 100% original Rust, not ported from lgwks_ui.py
+
 ## [0.7.0] — 2026-07-01
 
 ### Added — Human Experience (L1-L5 layered architecture)
