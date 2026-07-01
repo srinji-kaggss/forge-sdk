@@ -135,6 +135,24 @@ class VertexProvider:
         )
         return system_instruction, contents
 
+    @staticmethod
+    def _openai_tools_to_gemini_declarations(tools: list[dict]) -> list[dict]:
+        """Convert forge's canonical OpenAI-shaped tool schemas (ToolSpec.to_prompt_schema())
+        into Gemini's functionDeclarations shape. One functionDeclarations block
+        holding all tools, per Gemini's REST API contract.
+        """
+        declarations = []
+        for tool in tools:
+            function = tool.get("function", tool)  # tolerate a bare function dict too
+            declarations.append(
+                {
+                    "name": function.get("name", ""),
+                    "description": function.get("description", ""),
+                    "parameters": function.get("parameters", {"type": "object", "properties": {}}),
+                }
+            )
+        return [{"functionDeclarations": declarations}]
+
     def _build_payload(
         self,
         messages: list[dict],
@@ -142,6 +160,7 @@ class VertexProvider:
         temperature: float,
         max_tokens: int | None,
         stop: list[str] | None,
+        tools: list[dict] | None = None,
     ) -> dict[str, Any]:
         system_instruction, contents = self._to_gemini_contents(messages)
         generation_config: dict[str, Any] = {"temperature": temperature}
@@ -152,13 +171,20 @@ class VertexProvider:
         payload: dict[str, Any] = {"contents": contents, "generationConfig": generation_config}
         if system_instruction is not None:
             payload["systemInstruction"] = system_instruction
+        if tools:
+            payload["tools"] = self._openai_tools_to_gemini_declarations(tools)
         return payload
 
     def _parse_response(self, data: dict[str, Any]) -> ModelResponse:
         candidates = data.get("candidates") or []
         candidate = candidates[0] if candidates else {}
         parts = candidate.get("content", {}).get("parts", [])
-        content = "".join(p.get("text", "") for p in parts)
+        content = "".join(p.get("text", "") for p in parts if "text" in p)
+        tool_calls = [
+            {"id": "", "name": p["functionCall"].get("name", ""), "arguments": p["functionCall"].get("args", {})}
+            for p in parts
+            if "functionCall" in p
+        ]
         usage_data = data.get("usageMetadata", {})
         return ModelResponse(
             content=content,
@@ -172,6 +198,7 @@ class VertexProvider:
             ),
             finish_reason=candidate.get("finishReason", ""),
             raw=data,
+            tool_calls=tool_calls,
         )
 
     def complete(
@@ -181,9 +208,10 @@ class VertexProvider:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> ModelResponse:
         payload = self._build_payload(
-            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop, tools=tools
         )
         resp = self._client.post(
             f"{self._base_url}:generateContent",
@@ -200,12 +228,13 @@ class VertexProvider:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> list[ModelChunk]:
         # No caller in the ReactAgent loop uses complete_stream today (only
         # mesh.py delegates to it); satisfy the protocol via one complete()
         # call wrapped as a single chunk instead of adding an unused SSE parser.
         response = self.complete(
-            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop, tools=tools
         )
         return [
             ModelChunk(

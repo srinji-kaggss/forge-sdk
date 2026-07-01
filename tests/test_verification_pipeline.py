@@ -33,7 +33,7 @@ class _FakeModelPort(ModelPort):
         self._steps = steps
         self._idx = 0
 
-    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
         if self._idx >= len(self._steps):
             body = {
                 "thought": "done",

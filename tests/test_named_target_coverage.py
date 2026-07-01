@@ -110,7 +110,7 @@ class _OneOfTwoEditsModel:
     def __init__(self):
         self._step = 0
 
-    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
         self._step += 1
         if self._step == 1:
             body = {
@@ -175,7 +175,7 @@ async def test_arun_no_flag_when_all_named_targets_are_edited(tmp_path):
         def __init__(self):
             self._step = 0
 
-        def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+        def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
             response = model_steps[self._step]
             self._step += 1
             return ModelResponse(content=response)

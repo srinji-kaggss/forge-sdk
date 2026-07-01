@@ -27,7 +27,7 @@ class _NoneContentThenFinishModel:
     def __init__(self):
         self._step = 0
 
-    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
         self._step += 1
         if self._step == 1:
             return ModelResponse(content=None)

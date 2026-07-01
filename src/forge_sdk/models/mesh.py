@@ -71,11 +71,12 @@ class MeshModelPort:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> ModelResponse:
         provider_name, model_id = self._resolve_model()
         provider = self._get_provider(provider_name)
         return provider.complete(
-            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop, tools=tools
         )
 
     def complete_stream(
@@ -85,11 +86,12 @@ class MeshModelPort:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> list[ModelChunk]:
         provider_name, model_id = self._resolve_model()
         provider = self._get_provider(provider_name)
         return provider.complete_stream(
-            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop, tools=tools
         )
 
     # -- Internal resolution --------------------------------------------------
