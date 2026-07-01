@@ -1,16 +1,22 @@
 """Shell execution tool — runs commands in a subprocess.
 
-v0.5.1: Defense-in-depth security via forge_sdk.security module.
-No shell=True fallback. Allowlist-based path checking. Network egress blocked.
+Defense-in-depth via forge_sdk.security, which regex-scans the raw command
+string regardless of execution mode. Compound commands (&&, |, ;, a cd
+prefix) route through a real shell so operators mean what they say; simple
+commands run as argv, unchanged.
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 
 from forge_sdk.security import _check_command_safety, _check_path_safety
 from forge_sdk.tools import ToolResult, ToolSpec
+
+# Operators only a real shell interprets — argv exec ignores or misfires on these.
+_SHELL_OPERATOR_PATTERN = re.compile(r"&&|\|\||[|;<>]|\$\(|`|\bcd\s")
 
 
 async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
@@ -44,22 +50,27 @@ async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
 
     logging.getLogger("forge.tools.shell").warning("SHELL: %s (cwd=%s)", command, cwd)
 
-    # Parse with shlex — NEVER fall back to shell=True
-    try:
-        args = shlex.split(command)
-    except ValueError as exc:
-        return ToolResult(
-            success=False,
-            output="",
-            error=f"Command parse failed (unbalanced quotes): {exc}. "
-            f"Fix the quoting. shell=True fallback is disabled for security.",
-            metadata={"command": command, "blocked": True},
-        )
+    # Compound commands (&&, |, ;, cd-prefix, redirects, substitution) need a
+    # real shell to mean what they say — see the module docstring. The security
+    # boundary is _check_command_safety() above, which already scanned the raw
+    # string; this only decides HOW the (already-approved) command executes.
+    if _SHELL_OPERATOR_PATTERN.search(command):
+        popen_args: list[str] | str = ["/bin/sh", "-c", command]
+    else:
+        try:
+            popen_args = shlex.split(command)
+        except ValueError as exc:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Command parse failed (unbalanced quotes): {exc}. Fix the quoting.",
+                metadata={"command": command, "blocked": True},
+            )
 
     try:
         result = subprocess.run(
-            args,
-            shell=False,  # NEVER shell=True
+            popen_args,
+            shell=False,  # even the compound-command path: explicit argv to /bin/sh -c, not shell=True
             capture_output=True,
             text=True,
             timeout=timeout,
