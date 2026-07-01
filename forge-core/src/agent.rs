@@ -88,7 +88,6 @@ pub trait Agent: Send + Sync {
     async fn run_with_events(&mut self, state: &mut AgentState, event_tx: tokio::sync::mpsc::Sender<AgentEvent>) -> AgentResult;
 }
 
-#[allow(dead_code)]
 pub struct LifecycleAgent {
     model_port: Arc<dyn ModelPort>,
     tools: Vec<Box<dyn Tool<Input = serde_json::Value, Output = serde_json::Value>>>,
@@ -169,25 +168,36 @@ impl Agent for LifecycleAgent {
                 if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PreToolUse, state).await {
                     return AgentResult::new_premature_shutdown(reason, &state.steps);
                 }
-                let ctx = crate::permission::PermissionContext {
-                    action_label: format!("tool:{}", tc.name),
-                    classification: crate::permission::ActionClassification::Safe,
-                    tool_name: tc.name.clone(),
-                    tool_args: tc.arguments.clone(),
-                    cwd: state.cwd.clone(),
-                    sandbox: state.sandbox.clone(),
-                    files_read_in_session: state.files_read_in_session.clone(),
-                    permission_mode: state.permission_mode.clone(),
-                    task: state.task.clone(),
-                };
-                let _decision = state.permission_gate.evaluate(&ctx).await;
+                // Classify by the tool's OWN declared classification (never a hardcoded Safe),
+                // and actually branch on the gate's decision -- a Deny must skip execution.
+                // See PR#69 review: the prior version evaluated with classification=Safe and
+                // discarded the result, so PermissionGate's Destructive/NetworkIn HardDeny
+                // defaults never fired.
                 let obs = if let Some(skip) = skip_result {
                     skip.to_string()
                 } else if let Some(tool) = self.find_tool(&tc.name) {
-                    let input = serde_json::json!(tc.arguments);
-                    match tool.call(input, &state.sandbox).await {
-                        Ok(o) => serde_json::to_string(&o).unwrap_or_else(|_| "{}".into()),
-                        Err(e) => format!("Tool error: {:?}", e),
+                    let ctx = crate::permission::PermissionContext {
+                        action_label: format!("tool:{}", tc.name),
+                        classification: tool.classification(),
+                        tool_name: tc.name.clone(),
+                        tool_args: tc.arguments.clone(),
+                        cwd: state.cwd.clone(),
+                        sandbox: state.sandbox.clone(),
+                        files_read_in_session: state.files_read_in_session.clone(),
+                        permission_mode: state.permission_mode.clone(),
+                        task: state.task.clone(),
+                    };
+                    match state.permission_gate.evaluate(&ctx).await {
+                        crate::permission::PermissionDecision::Deny { reason, .. } => {
+                            format!("Permission denied for tool '{}': {:?}", tc.name, reason)
+                        }
+                        crate::permission::PermissionDecision::Allow { .. } => {
+                            let input = serde_json::json!(tc.arguments);
+                            match tool.call(input, &state.sandbox).await {
+                                Ok(o) => serde_json::to_string(&o).unwrap_or_else(|_| "{}".into()),
+                                Err(e) => format!("Tool error: {:?}", e),
+                            }
+                        }
                     }
                 } else {
                     format!("Unknown tool: {}", tc.name)
@@ -203,8 +213,8 @@ impl Agent for LifecycleAgent {
                     obs,
                     None,
                     response.input_tokens + response.output_tokens,
-                    response.input_tokens as f64 * 0.000001
-                        + response.output_tokens as f64 * 0.000002 ,
+                    (response.input_tokens as f64 * 0.000001
+                        + response.output_tokens as f64 * 0.000002),
                     Some(tc.name.clone()),
                     None,
                     false,
@@ -234,7 +244,7 @@ impl Agent for LifecycleAgent {
                 provider: String::new(),
                 max_steps: state.max_steps,
                 max_tokens: state.max_tokens.unwrap_or(0),
-            },
+            }
         ));
         let result = self.run(state).await;
         let _ = event_tx.try_send(AgentEvent::RunEnd(
@@ -251,7 +261,7 @@ impl Agent for LifecycleAgent {
                 total_tokens: result.total_tokens,
                 total_cost: result.total_cost,
                 duration_ms: 0,
-            },
+            }
         ));
         result
     }
@@ -260,7 +270,6 @@ impl Agent for LifecycleAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_core_security::sandbox::SandboxRoot;
 
     #[test]
     fn test_tool_error_debug() {
@@ -275,10 +284,91 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_action_types() {
-        match HookAction::Continue {
-            HookAction::Continue => {}
-            _ => panic!("wrong variant"),
+    fn test_agent_state_should_stop() {
+        let sb = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
+        let task = Trusted::new_internal("test".into());
+        let gate = PermissionGate::new(PermissionMode::Yolo);
+        let vp = VerifierPipeline::with_default_gates(None);
+        let mut state = AgentState {
+            task, sandbox: sb, cwd: PathBuf::from("/tmp"),
+            steps: vec![], files_read_in_session: vec![],
+            permission_mode: PermissionMode::Yolo, permission_gate: gate,
+            verifier: vp, model_port: None, total_tokens: 0, total_cost: 0.0,
+            max_steps: 3, max_tokens: None, max_cost: None,
+        };
+        assert!(state.should_stop().is_none());
+        let mut args = std::collections::HashMap::new();
+        args.insert("x".into(), serde_json::Value::String("y".into()));
+        state.steps.push(AgentStep::new(0, "t", "a", args, "o", None, 0, 0.0, None, None, false, false));
+        state.steps.push(AgentStep::new(1, "t", "a", std::collections::HashMap::new(), "o", None, 0, 0.0, None, None, false, false));
+        state.steps.push(AgentStep::new(2, "t", "a", std::collections::HashMap::new(), "o", None, 0, 0.0, None, None, false, false));
+        assert!(state.should_stop().is_some());
+    }
+
+    // Regression for the finding in PR#69 review: a tool self-classified as Destructive
+    // must be blocked by PermissionGate's default Destructive->HardDeny policy, in any
+    // mode (HardDeny is checked before the Yolo/Interactive/Plan mode match).
+    struct ScriptedPort { calls: std::sync::atomic::AtomicUsize }
+    #[async_trait]
+    impl crate::port::ModelPort for ScriptedPort {
+        async fn generate(&self, _s: &str, _m: &[std::collections::HashMap<String, String>]) -> Result<crate::port::ModelResponse, crate::port::ModelError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                let mut args = std::collections::HashMap::new();
+                args.insert("target".into(), serde_json::Value::String("/".into()));
+                Ok(crate::port::ModelResponse::new("", vec![crate::port::ToolCall::new("wipe_disk", args, None)], 10, 10, "test"))
+            } else {
+                Ok(crate::port::ModelResponse::new("done", vec![], 5, 5, "test"))
+            }
         }
+        async fn generate_with_tools(&self, _s: &str, _m: &[std::collections::HashMap<String, String>], _t: &[crate::port::ToolSpec]) -> Result<crate::port::ModelResponse, crate::port::ModelError> {
+            unimplemented!()
+        }
+        async fn count_tokens(&self, _text: &str) -> Result<u64, crate::port::ModelError> { Ok(0) }
+    }
+
+    struct WipeDiskTool { invoked: std::sync::Arc<std::sync::atomic::AtomicUsize> }
+    #[async_trait]
+    impl Tool for WipeDiskTool {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+        fn name(&self) -> &'static str { "wipe_disk" }
+        fn description(&self) -> &'static str { "DESTRUCTIVE: wipes a disk target" }
+        fn classification(&self) -> ActionClassification { ActionClassification::Destructive }
+        async fn call(&self, _input: Self::Input, _sandbox: &SandboxRoot) -> Result<Self::Output, ToolError> {
+            self.invoked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(serde_json::json!({"wiped": true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn destructive_tool_is_blocked_by_default_hard_deny_policy() {
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool: Box<dyn Tool<Input = serde_json::Value, Output = serde_json::Value>> =
+            Box::new(WipeDiskTool { invoked: invoked.clone() });
+        let mut agent = LifecycleAgent::new(
+            std::sync::Arc::new(ScriptedPort { calls: std::sync::atomic::AtomicUsize::new(0) }),
+            vec![tool],
+            vec![],
+        );
+        let sandbox = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
+        let task = Trusted::new_internal("test task".into());
+        // Yolo mode: HardDeny for Destructive must block regardless of mode.
+        let gate = PermissionGate::new(PermissionMode::Yolo);
+        let vp = VerifierPipeline::with_default_gates(None);
+        let mut state = AgentState {
+            task, sandbox, cwd: PathBuf::from("/tmp"),
+            steps: vec![], files_read_in_session: vec![],
+            permission_mode: PermissionMode::Yolo, permission_gate: gate,
+            verifier: vp, model_port: None, total_tokens: 0, total_cost: 0.0,
+            max_steps: 10, max_tokens: None, max_cost: None,
+        };
+        agent.run(&mut state).await;
+        assert_eq!(invoked.load(std::sync::atomic::Ordering::SeqCst), 0,
+            "Destructive-classified tool executed despite PermissionGate's default HardDeny policy");
+        let history = state.permission_gate.history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].classification, ActionClassification::Destructive);
+        assert!(matches!(history[0].decision, crate::permission::PermissionDecision::Deny { .. }));
     }
 }
