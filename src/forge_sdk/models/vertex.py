@@ -182,7 +182,11 @@ class VertexProvider:
         parts = candidate.get("content", {}).get("parts", [])
         content = "".join(p.get("text", "") for p in parts if "text" in p)
         tool_calls = [
-            {"id": "", "name": p["functionCall"].get("name", ""), "arguments": p["functionCall"].get("args", {})}
+            {
+                "id": "",
+                "name": p["functionCall"].get("name", ""),
+                "arguments": p["functionCall"].get("args", {}),
+            }
             for p in parts
             if "functionCall" in p
         ]
