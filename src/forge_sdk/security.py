@@ -15,6 +15,7 @@ Every episode-derived text is sanitized before becoming a PromptFragment.
 from __future__ import annotations
 
 import re
+import shlex
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,9 +52,6 @@ SENSITIVE_READ_PATHS = (
     ".git/credentials",
     "keychain",
     "login.keychain",
-    # stopgap -- see specs/SPEC-SECURITY-003 Phase 0 for the structural fix
-    ".cline/",
-    ".cursor/",
 )
 
 SENSITIVE_WRITE_PATHS = (
@@ -78,6 +76,47 @@ SENSITIVE_WRITE_PATHS = (
     "authorized_keys",
     ".git/hooks/",
 )
+
+# Two distinct signals, not one — conflating them is how `.cursor/config.json`
+# slips through a filename-only check:
+#
+# 1. Filename-shaped: a file whose name reads as a secret/settings store,
+#    regardless of which dotdir it's under. Catches the general case without
+#    naming any specific app.
+# 2. Whole-directory: a small, closed, named set of AI-agent-CLI config
+#    directories where the ENTIRE tree is a credential store (this machine's
+#    other coding-agent CLIs keep API keys under config files with ordinary
+#    names like config.json — the directory identity is the signal, not the
+#    filename). This is a bounded taxonomy of "AI coding agent tools on this
+#    machine" (closed, reviewed set), not a reactive per-incident enumeration
+#    like the historical .cline/.cursor-only stopgap it replaces.
+_CREDENTIAL_FILENAME_RE = re.compile(
+    r"(credential|secret|token|session|cookies?|password|\bkeys?\b|settings|auth)",
+    re.IGNORECASE,
+)
+
+AGENT_CLI_CONFIG_DIRS = (
+    ".cline",
+    ".cursor",
+    ".codeium",
+    ".continue",
+    ".copilot",
+    ".windsurf",
+    ".aider",
+    ".zed",
+)
+
+
+def _looks_like_credential_store(path_str: str) -> bool:
+    parts = Path(path_str).parts
+    if any(part in AGENT_CLI_CONFIG_DIRS for part in parts):
+        return True
+    in_dotdir = any(part.startswith(".") and part not in (".", "..") for part in parts)
+    if not in_dotdir:
+        return False
+    basename = parts[-1] if parts else ""
+    return bool(_CREDENTIAL_FILENAME_RE.search(basename))
+
 
 # ── L3: Dangerous command patterns ───────────────────────────────────────────
 # Match variants: double spaces, -fr vs -rf, env var indirection
@@ -113,13 +152,6 @@ _NETWORK_CMD_PATTERNS = [
     re.compile(r"\bpython3?\s+-c\b.*socket", re.IGNORECASE),
 ]
 
-# Commands that can read arbitrary files — check their path arguments
-_FILE_READ_CMDS = re.compile(
-    r"\b(?:cat|head|tail|less|more|strings|file|stat|wc|nl|cut|sort|uniq|"
-    r"grep|rg|find|ls|dir|tree|python3?|ruby|perl|node)\b",
-    re.IGNORECASE,
-)
-
 # ── L1: Path safety ──────────────────────────────────────────────────────────
 
 
@@ -143,6 +175,12 @@ def _is_sensitive_path(path: str, cwd: str = ".", check_writes: bool = False) ->
     """
     resolved = _resolve_path(path, cwd)
     path_str = str(resolved)
+
+    # Generic credential-store signal (catches apps/IDEs not individually
+    # enumerated below — see _looks_like_credential_store).
+    if not check_writes and _looks_like_credential_store(path_str):
+        return f"BLOCKED: path '{path}' looks like a credential/settings store"
+
     # Check against sensitive paths — use prefix matching for absolute paths
     sensitive_list = SENSITIVE_WRITE_PATHS if check_writes else SENSITIVE_READ_PATHS
     for sensitive in sensitive_list:
@@ -238,13 +276,18 @@ def _check_path_safety(
 # ── L3: Command safety ───────────────────────────────────────────────────────
 
 
-def _check_command_safety(command: str) -> str | None:
+def _check_command_safety(command: str, cwd: str = ".") -> str | None:
     """L2 NETWORK + L3 HOST + L5 DATA: Central command safety check for shell tool.
 
     No shell=True fallback. No denylist-only. Layered:
     1. Block dangerous system commands (rm -rf, dd, mkfs, kill, fork bomb)
     2. Block network egress (curl, wget, nc, ssh, scp)
-    3. Block sensitive path access via shell (cat ~/.ssh/id_rsa, etc.)
+    3. Block sensitive path access via shell (cat ~/.ssh/id_rsa, etc.) — path
+       arguments are resolved and checked through the SAME resolver the
+       filesystem tools use (_is_sensitive_path), not a second, weaker,
+       raw-substring-only implementation. The raw-substring pass below stays
+       as a fallback for forms shlex can't tokenize cleanly (e.g. inside a
+       pipeline or heredoc), but is no longer the only check.
     4. Block python3 -c / ruby -e / perl -e (arbitrary code execution)
     """
     # L3: Dangerous commands
@@ -265,7 +308,24 @@ def _check_command_safety(command: str) -> str | None:
     if re.search(r"\bperl\s+-e\b", command, re.IGNORECASE):
         return "BLOCKED: arbitrary code execution via perl -e not allowed"
 
-    # L5: Sensitive paths in command
+    # L5: Sensitive paths in command — resolve each path-like argument
+    # through the canonical checker (catches paths not literally enumerated
+    # below, e.g. `.cline/data/settings/settings.json`, and catches variants
+    # like `//`-padding or trailing-slash that a pure substring test misses).
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = []
+    for token in tokens:
+        if token.startswith("-") or ("/" not in token and not token.startswith(".")):
+            continue
+        sensitive = _is_sensitive_path(token, cwd, check_writes=False)
+        if sensitive:
+            return sensitive
+
+    # Fallback raw-substring pass — catches sensitive paths embedded in a
+    # form shlex didn't tokenize as a standalone argument (e.g. glued into
+    # a larger token, inside a `$(...)` substitution, or a heredoc body).
     for sensitive in SENSITIVE_READ_PATHS:
         if sensitive in command:
             return f"BLOCKED: command targets sensitive path '{sensitive}'"

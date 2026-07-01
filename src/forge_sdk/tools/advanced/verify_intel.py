@@ -175,12 +175,22 @@ async def security_scan(file_path: str) -> ToolResult:
 
 async def git_diff(path: str = ".") -> ToolResult:
     """Get the git diff of uncommitted changes."""
-    proc = await asyncio.create_subprocess_shell(
-        f"git diff {path}",
+    violation = _check_path_safety(path, ".", check_writes=False)
+    if violation:
+        return ToolResult(success=False, output="", error=violation)
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "diff",
+        "--",
+        path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return ToolResult(
+            success=False, output="", error=stderr.decode().strip() or "git diff failed"
+        )
     diff = stdout.decode()
 
     files_changed = len(re.findall(r"^diff --git", diff, re.MULTILINE))
@@ -203,12 +213,23 @@ async def git_diff(path: str = ".") -> ToolResult:
 
 async def git_status(path: str = ".") -> ToolResult:
     """Get git status (uncommitted files)."""
-    proc = await asyncio.create_subprocess_shell(
-        f"git status --short {path}",
+    violation = _check_path_safety(path, ".", check_writes=False)
+    if violation:
+        return ToolResult(success=False, output="", error=violation)
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "status",
+        "--short",
+        "--",
+        path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return ToolResult(
+            success=False, output="", error=stderr.decode().strip() or "git status failed"
+        )
     status = stdout.decode()
 
     files: list[dict[str, str]] = []
