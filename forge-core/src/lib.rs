@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod context;
 pub mod event;
+pub mod guard;
 pub mod permission;
 pub mod port;
 pub mod result;
