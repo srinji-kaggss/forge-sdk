@@ -46,6 +46,23 @@ def test_parse_response_genuine_prose_finish_unaffected():
     assert parsed["action"] == "finish"
 
 
+def test_parse_response_empty_content_is_not_a_valid_finish():
+    """Real bug, live-reproduced dispatching gemini-2.5-flash against a
+    large write_file argument: Gemini's own function-calling decoder
+    returned finishReason=MALFORMED_FUNCTION_CALL with content="" and no
+    tool_calls at all. Empty content has no braces for any strategy to
+    even attempt, so it fell through to the SAME bottom "finish" fallback
+    as a genuine prose completion -- silently ending the task with a
+    blank output instead of surfacing that nothing usable came back.
+    """
+    agent = _agent()
+    parsed = agent._parse_response("")
+    assert parsed["action"] == "__parse_failed__"
+
+    parsed_whitespace = agent._parse_response("   \n  ")
+    assert parsed_whitespace["action"] == "__parse_failed__"
+
+
 class _MalformedThenRecoversModel:
     """Scripted model: malformed tool-call text, then (after the harness's
     corrective nudge) a valid write_file call, then finish."""
@@ -59,7 +76,7 @@ class _MalformedThenRecoversModel:
     def __init__(self):
         self._step = 0
 
-    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
         self._step += 1
         if self._step == 1:
             return ModelResponse(content=MALFORMED_TOOL_CALL)
@@ -83,7 +100,7 @@ class _AlwaysMalformedModel:
     max_output = 4096
     supports_reasoning = False
 
-    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
         return ModelResponse(content=MALFORMED_TOOL_CALL)
 
 

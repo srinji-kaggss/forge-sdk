@@ -601,6 +601,18 @@ class ReactAgent:
         First successful strategy wins. Debug logging traces which strategy matched.
         """
         content = content.strip()
+        if not content:
+            # Real bug: an empty response (e.g. Gemini's own function-calling
+            # decoder returning finishReason=MALFORMED_FUNCTION_CALL with no
+            # usable parts at all, most often triggered by a large string
+            # argument like a whole-file write_file content) has no braces
+            # for any strategy to even attempt, so this used to fall through
+            # to the bottom "finish" fallback below -- silently ending the
+            # task with a blank output instead of surfacing the failure.
+            # Treat empty exactly like a malformed response: retry, don't
+            # report false completion.
+            log.debug("PARSE: empty content, not a valid finish")
+            return {"thought": "", "action": "__parse_failed__", "action_input": {"output": ""}}
         attempted = False
         for strategy in _PARSE_STRATEGIES:
             if strategy.applies(content):
@@ -873,12 +885,45 @@ class ReactAgent:
 
         return None
 
-    async def _call_model_with_retry(self, messages: list[dict], temperature: float = 0.0) -> Any:
+    @staticmethod
+    def _finish_tool_schema() -> dict:
+        """`finish` is a sentinel action handled entirely in this file's
+        dispatch loop (see `is_final = action == "finish"` below), not a
+        registered ToolRegistry tool — so it needs its own synthetic
+        function declaration to be callable via native tool-calling.
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": "finish",
+                "description": (
+                    "Call this when the task is fully complete. Provide the final "
+                    "answer or a summary of what was accomplished."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "output": {
+                            "type": "string",
+                            "description": "Final answer or summary of what was accomplished",
+                        }
+                    },
+                    "required": ["output"],
+                },
+            },
+        }
+
+    def _tool_schemas(self) -> list[dict]:
+        return [*self._tools.to_prompt_schemas(), self._finish_tool_schema()]
+
+    async def _call_model_with_retry(
+        self, messages: list[dict], temperature: float = 0.0, tools: list[dict] | None = None
+    ) -> Any:
         """Call model with exponential backoff retry."""
         last_error = None
         for attempt in range(self._max_retries):
             try:
-                return self._model.complete(messages, temperature=temperature)
+                return self._model.complete(messages, temperature=temperature, tools=tools)
             except Exception as e:
                 last_error = e
                 error_type = type(e).__name__
@@ -1002,7 +1047,7 @@ class ReactAgent:
 
             # Call model with retry
             try:
-                response = await self._call_model_with_retry(messages)
+                response = await self._call_model_with_retry(messages, tools=self._tool_schemas())
             except Exception as e:
                 log.error("Model call failed after retries: %s", e)
                 break
@@ -1037,15 +1082,29 @@ class ReactAgent:
                     **({"step": step_num, "run_id": metrics.run_id}),
                 )
 
-            # Parse response
-            try:
-                parsed = self._parse_response(response.content)
-            except (json.JSONDecodeError, ValueError):
+            # Parse response. Prefer the provider's native tool call when
+            # present -- that JSON came from the provider's own constrained
+            # decoding, not free text this loop has to reverse-engineer, so
+            # none of _PARSE_STRATEGIES' failure modes (literal control
+            # chars, unescaped quotes, XML instead of JSON) are reachable.
+            # Fall back to text parsing only when the provider/model didn't
+            # return a tool call (e.g. no native tool-calling support).
+            if response.tool_calls:
+                call = response.tool_calls[0]
                 parsed = {
-                    "thought": response.content,
-                    "action": "finish",
-                    "action_input": {"output": response.content},
+                    "thought": response.content or f"(tool call: {call['name']})",
+                    "action": call["name"],
+                    "action_input": call["arguments"],
                 }
+            else:
+                try:
+                    parsed = self._parse_response(response.content)
+                except (json.JSONDecodeError, ValueError):
+                    parsed = {
+                        "thought": response.content,
+                        "action": "finish",
+                        "action_input": {"output": response.content},
+                    }
 
             thought = parsed.get("thought", "")
             action = parsed.get("action", "finish")
@@ -1180,8 +1239,15 @@ class ReactAgent:
                     self._extract_edits_from_observation(action, action_input, observation)
                 )
 
-            # Add to messages for next iteration
-            messages.append({"role": "assistant", "content": response.content})
+            # Add to messages for next iteration. Native tool calls leave
+            # response.content empty (the provider put everything in
+            # tool_calls instead) -- record what was actually called so the
+            # history stays coherent; an empty assistant turn followed by a
+            # "Tool output" message gives the model no way to tell which of
+            # its own actions produced that output, which is how it can end
+            # up repeating the exact same call the LoopGuard already blocked.
+            assistant_content = response.content or f"Called {action}({action_input})"
+            messages.append({"role": "assistant", "content": assistant_content})
             if observation:
                 messages.append({"role": "user", "content": f"Tool output:\n{observation}"})
 

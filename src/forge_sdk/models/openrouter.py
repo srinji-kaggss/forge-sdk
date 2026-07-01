@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from forge_sdk.models.types import ModelChunk, ModelResponse, Usage
+from forge_sdk.models.types import ModelChunk, ModelResponse, Usage, normalize_openai_tool_calls
 
 
 class OpenRouterProvider:
@@ -59,6 +59,7 @@ class OpenRouterProvider:
         temperature: float,
         max_tokens: int | None,
         stop: list[str] | None,
+        tools: list[dict] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._model,
@@ -69,6 +70,9 @@ class OpenRouterProvider:
             payload["max_tokens"] = max_tokens
         if stop:
             payload["stop"] = stop
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
         return payload
 
     def _parse_response(self, data: dict[str, Any]) -> ModelResponse:
@@ -89,6 +93,7 @@ class OpenRouterProvider:
             ),
             finish_reason=choice.get("finish_reason", ""),
             raw=data,
+            tool_calls=normalize_openai_tool_calls(message.get("tool_calls")),
         )
 
     def complete(
@@ -98,9 +103,10 @@ class OpenRouterProvider:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> ModelResponse:
         payload = self._build_payload(
-            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop, tools=tools
         )
         resp = self._client.post(
             f"{self._base_url}/v1/chat/completions",
@@ -117,9 +123,10 @@ class OpenRouterProvider:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> list[ModelChunk]:
         payload = self._build_payload(
-            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop, tools=tools
         )
         payload["stream"] = True
         resp = self._client.post(

@@ -33,6 +33,7 @@ class ModelPort(Protocol):
         temperature: float = 0.0,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> ModelResponse: ...
 
     def complete_stream(
@@ -42,4 +43,5 @@ class ModelPort(Protocol):
         temperature: float = 0.0,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> list[ModelChunk]: ...

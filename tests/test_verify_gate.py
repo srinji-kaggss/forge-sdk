@@ -118,7 +118,7 @@ class _FakeModel:
         self._content = content
         self._step = 0
 
-    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None):
+    def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
         self._step += 1
         if self._step == 1:
             action_input = {"path": self._written_file, "content": self._content}
