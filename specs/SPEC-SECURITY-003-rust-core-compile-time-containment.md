@@ -1,8 +1,9 @@
 ---
 spec: SPEC-SECURITY-003
 title: "Compile-Time Containment & the Rust Core Migration"
-status: DRAFT — plan for Director review, chunked for agent dispatch, nothing implemented yet
-version: 0.1.0
+status: v0.1.0 plan approved + merged (PR #35); P0-A/P0-B chunks landed (PR #37, #36). Phase 1
+  dependency scope decided (v0.1.1, see §7). Rust crate itself not yet started.
+version: 0.1.1
 date: 2026-07-01
 author: claude (Sonnet 5, orchestrator session)
 collaborators: [srinji (Director)]
@@ -127,12 +128,16 @@ the concrete, falsifiable target — not a marketing claim.
 
 ---
 
-## 3. Rust architecture — patterns to steal, not dependencies to add
+## 3. Rust architecture — patterns to steal, and which ones become real dependencies
 
-Per Director instruction: **zero new external crates**. Everything below is a *pattern* researched
-from OSS (cited), reimplemented as forge's own proprietary code — the same policy CLAUDE.md prime
-directive 4 already applies to the Python codebase (e.g. `security.py`'s own docstring: encoding-anomaly
-detection "ported from `logicalworks-/engine/membrane_sanitize.py`... re-implemented, not imported").
+**Revised per Director decision, v0.1.1 (§7):** not everything below is hand-rolled. Three crates
+are approved as real dependencies because they are genuinely foundational, load-bearing infrastructure
+where reimplementing would mean re-deriving hard-won correctness work (capability-safe filesystem
+semantics, a JSON serialization format) rather than forge-specific policy: `cap-std`, `serde` +
+`serde_json`, and `untrusted_value`. Everything else in this section — the `SafetyGate`/Kleene trait
+shape, the `PermissionDecision`/`PolicyTier` enum, the `Tool` trait, the lifecycle-hook loop — stays
+hand-rolled, because those *are* forge-specific policy, not generic infrastructure, and CLAUDE.md
+prime directive 4's "own the use-case layer" applies most directly to exactly that boundary.
 
 ### 3.1 Reuse, don't reinvent: keel-core's `SafetyGate` trait + Kleene logic
 
@@ -163,13 +168,16 @@ only. The real taint-tracking mechanism forge needs comes from §3.2, not from k
 
 ### 3.2 The compile-time containment primitive: `Tainted<T>` / `Trusted<T>`
 
-Researched pattern: the `untrusted_value` crate's `UntrustedValue<T>` newtype — a private inner field,
-with the *only* way to extract a plain `T` being `.sanitize_with(fn) -> Result<Clean, Error>`. Because
-the field is private, no code outside the module can compile a path that uses the raw value without
-going through a sanitizer. This is the general Rust **newtype pattern** (a zero-cost, privacy-enforced
-validation barrier), not a novel invention.
+Approved dependency (§7): the `untrusted_value` crate's `UntrustedValue<T>` newtype — a private inner
+field, with the *only* way to extract a plain `T` being `.sanitize_with(fn) -> Result<Clean, Error>`.
+Because the field is private, no code outside the module can compile a path that uses the raw value
+without going through a sanitizer. This is the general Rust **newtype pattern** (a zero-cost,
+privacy-enforced validation barrier) — depending on the crate directly (rather than hand-rolling the
+same ~200 lines) is the approved choice; forge's `Tainted<T>`/`Trusted<T>` wraps it with forge-specific
+fields (`category`, `risk_score`) that the crate itself doesn't have, so this is "depend on the
+primitive, own the policy on top of it," not a bare re-export.
 
-Forge's own version (proprietary, hand-written, no dependency on `untrusted_value` itself):
+Illustrative shape (final API surface TBD at implementation time):
 
 ```rust
 pub struct Tainted<T>(T);          // no public constructor outside this module except from raw I/O
@@ -204,10 +212,13 @@ scoped to a root; every open call is *relative to that capability* and there is 
 absolute or escaping path at all. Nothing is "checked and rejected" — the illegal access **has no
 function to call**.
 
-Forge's version: a `SandboxRoot` capability type, constructed once per agent run from `cwd`/`sandbox_dir`,
-with `.open(relative_path) -> io::Result<File>` as the *only* filesystem entry point exposed to tool
-handlers. There is no `security::_check_path_safety(path, cwd)` function to forget to call, because
-there is no other way to open a file. This is strictly stronger than an allowlist-of-safe-paths (which
+Approved dependency (§7): depend on `cap-std` directly rather than reimplementing its capability model
+— this is the highest-payoff, highest-risk-to-get-wrong piece of the whole crate (path/symlink-escape
+correctness), and Bytecode Alliance's implementation is exactly the kind of foundational, security-
+critical infrastructure this call is meant to distinguish from forge-specific policy. Forge's
+`SandboxRoot` type wraps `cap_std::fs::Dir` and exposes `.open(relative_path) -> io::Result<File>` as
+the *only* filesystem entry point given to tool handlers. There is no `security::_check_path_safety(path,
+cwd)` function to forget to call, because there is no other way to open a file. This is strictly stronger than an allowlist-of-safe-paths (which
 would just move the same enumeration problem to the other side) — it's "the capability doesn't exist
 to escape," matching cap-std's own framing exactly. Sensitive-path awareness (today's `SENSITIVE_READ_
 PATHS`/`SENSITIVE_WRITE_PATHS`) becomes a secondary, defense-in-depth check *inside* `SandboxRoot::open`
@@ -352,18 +363,46 @@ land, over-spec'd stall" lesson already logged in memory. Dispatch via `forge ru
    `SENSITIVE_READ_PATHS` in `security.py`, with a regression test asserting the exact
    `cat ~/.cline/data/settings/settings.json` case is now blocked. Label the commit message as an
    explicit stopgap per §4 Phase 0, not a structural fix.
-3. **P1-A**: Scaffold `forge-core-security` as a new Cargo crate (workspace member, no new external
-   crates — `std` only where possible; if a crate is genuinely needed, e.g. `serde`/`serde_json` for
-   the JSON-in/JSON-out boundary, name it explicitly and flag for Director approval per CLAUDE.md
-   prime directive 4, do not silently add it). Implement `Tainted<T>`/`Trusted<T>` (§3.2) and
-   `ContainmentResult`/`Category` with unit tests covering the SPEC-SECURITY-002 §6 ten-case table.
-4. **P1-B**: Implement `SandboxRoot` (§3.3) in the same crate with unit tests covering: legitimate
-   relative access, absolute-path rejection, symlink-escape rejection, and the temp-dir allowance
-   (mirroring `_temp_roots()`/`_is_within_temp_dir()`'s existing Python behavior for parity).
+3. **P1-A**: Scaffold `forge-core-security` as a new Cargo crate (workspace member) with `cap-std`,
+   `serde`, `serde_json`, and `untrusted_value` as dependencies — approved per §7, do not add anything
+   beyond these four without a fresh ask. Implement `Tainted<T>`/`Trusted<T>` (§3.2, built on
+   `untrusted_value`) and `ContainmentResult`/`Category` with unit tests covering the
+   SPEC-SECURITY-002 §6 ten-case table.
+4. **P1-B**: Implement `SandboxRoot` (§3.3, built on `cap_std::fs::Dir`) in the same crate with unit
+   tests covering: legitimate relative access, absolute-path rejection, symlink-escape rejection, and
+   the temp-dir allowance (mirroring `_temp_roots()`/`_is_within_temp_dir()`'s existing Python behavior
+   for parity).
 5. **P1-C**: Wire `forge-core-security` into the Python CLI via a subprocess JSON pipe (documented
-   protocol: request `{op, args}` → response `{verdict, ...}` on stdin/stdout), replacing
-   `_check_command_safety`/`_check_path_safety`'s internals while keeping their existing call sites'
-   Python signatures stable (no breakage to `shell.py`'s current callers).
+   protocol: request `{op, args}` → response `{verdict, ...}` on stdin/stdout via `serde_json`),
+   replacing `_check_command_safety`/`_check_path_safety`'s internals while keeping their existing
+   call sites' Python signatures stable (no breakage to `shell.py`'s current callers).
 
 Each chunk's agent must run against real tests (not mocked) before being reported complete, per
 AUDIT-MATRIX-001's own meta-finding that the existing adversarial suite's biggest gap was testing mocks.
+
+---
+
+## 7. Decisions log (append-only — do not edit past entries, add new ones)
+
+- **2026-07-01, v0.1.0 → merged (PR #35).** Director approved the phased plan and the Rust-migration
+  override of SPEC-SECURITY-002 §3.3 as written.
+- **2026-07-01, v0.1.1 — dependency scope for Phase 1, Director decision:** `cap-std`, `serde`+
+  `serde_json`, and `untrusted_value` are approved as **real Cargo dependencies**, not patterns to
+  reimplement — reasoning: these are foundational infrastructure (capability-safe filesystem
+  semantics, a serialization format, a compile-time-taint newtype) where reimplementing means
+  re-deriving hard-won correctness rather than building forge-specific value. Everything else in §3
+  (the `SafetyGate`/Kleene trait, `PermissionDecision`/`PolicyTier`, the `Tool` trait, lifecycle hooks)
+  stays hand-rolled — that's forge's own policy layer, not generic infrastructure, per CLAUDE.md prime
+  directive 4's "own the use-case layer, never a wrapper-on-a-library" test.
+  - Director's standing instruction for how this list evolves: periodically check whether an approved
+    foundational dependency needs a version bump or has a better-fitting alternative, and route that
+    check through a forked research pass + a playbook (not an ad hoc one-off) so the update path is
+    itself repeatable, not reinvented each time. Any *new* addition beyond this four-crate list still
+    needs an explicit ask, per CLAUDE.md prime directive 4 — this decision is not a blanket "add
+    anything foundational-seeming" license.
+  - Also standing: keep dispatching `forge run` agents for implementation chunks (per §6), and treat
+    their failure modes as data to accumulate, not just work around — see the P0-A/P0-B chunk PRs
+    (#36, #37) for the first real, logged failure classes (OpenRouter credit exhaustion, forge's own
+    default $1/run budget cutting off a nearly-complete task, a phantom-edit false-success claim
+    forge's own verifier correctly caught, a malformed tool call). This is the vibe-coding-journey
+    documentation the Director's temporary operating directive asks for, applied to forge itself.
