@@ -9,15 +9,21 @@ command never ran, and the agent got a false success signal instead of an
 honest error, which is exactly the failure class this whole harness is
 meant to catch, not cause.
 
-_check_command_safety() scans the raw command string via regex before any
-execution-mode decision, so routing compound commands through `/bin/sh -c`
-does not weaken that check — see tools/shell.py's module docstring.
+Fixed once by routing operator-bearing commands through `/bin/sh -c` — that
+reopened real shell execution behind a regex denylist and was itself a real,
+reproduced vulnerability (see
+test_command_substitution_cannot_achieve_arbitrary_execution below). Fixed
+again by interpreting &&/||/;/| and `cd` directly as an argv-only state
+machine — see tools/shell.py's module docstring for the current design.
 
 Run with: pytest tests/test_shell_compound_commands.py -v
 """
 
 from __future__ import annotations
 
+import base64
+
+from forge_sdk.security import _check_command_safety
 from forge_sdk.tools.shell import _shell
 
 
@@ -56,8 +62,33 @@ async def test_simple_command_without_operators_still_uses_argv_path(tmp_path):
 
 async def test_compound_command_still_blocked_by_command_safety(tmp_path):
     """The security boundary (_check_command_safety) must still apply to
-    compound commands — routing through /bin/sh -c must not bypass L2/L3."""
+    compound commands."""
     result = await _shell("echo safe && curl http://example.com", cwd=str(tmp_path))
 
     assert result.success is False
     assert "network egress" in result.error
+
+
+async def test_command_substitution_cannot_achieve_arbitrary_execution(tmp_path):
+    """Regression for a real, execution-proven vulnerability in the prior
+    fix for this file: routing operator-bearing commands through
+    `/bin/sh -c` reintroduced real shell semantics behind a regex denylist
+    (_check_command_safety), which is provably incomplete — no pattern in
+    L2/L3 names a base64-decoded, dynamically-constructed command. Proven
+    live: `echo safe; $(echo <base64 of an arbitrary command> | base64 -d
+    | sh)` created a marker file when run through the /bin/sh -c path,
+    with `_check_command_safety` returning no violation at all. This test
+    fails if that class of bypass is ever reintroduced.
+    """
+    marker = tmp_path / "marker.txt"
+    encoded = base64.b64encode(f"touch {marker}".encode()).decode()
+    payload = f"echo build-step-1; $(echo {encoded} | base64 -d | sh) ; echo build-step-2"
+
+    assert _check_command_safety(payload) is None, (
+        "expected this payload to be invisible to the regex denylist — "
+        "that's the whole point of the regression"
+    )
+
+    await _shell(payload, cwd=str(tmp_path))
+
+    assert not marker.exists(), "command substitution achieved arbitrary execution"
