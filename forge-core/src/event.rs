@@ -2,7 +2,7 @@
 ///
 /// Every event in the forge system carries a `Correlation` so that the full
 /// event stream can be traced, replayed, and audited as a hash chain.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Correlation {
     pub trace_id: String,
     pub run_id: String,
@@ -113,7 +113,7 @@ impl ThinkEvent {
 }
 
 /// Fired when the agent performs an action (tool call).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ActionEvent {
     pub correlation: Correlation,
     pub action: String,
@@ -128,7 +128,7 @@ impl ActionEvent {
 }
 
 /// Fired when the agent receives an observation (tool output).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ObservationEvent {
     pub correlation: Correlation,
     pub observation: String,
