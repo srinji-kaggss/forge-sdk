@@ -158,6 +158,25 @@ def test_spec_conformance_excludes_currently_excluded_phrasing():
     assert evidence.status != VerificationStatus.FAILED
 
 
+def test_spec_conformance_ignores_eg_abbreviation():
+    """Live bug (shares the FILE_PATH_TOKEN regex with react.py's advisory
+    detector — see test_named_target_coverage.py's matching test): a
+    parenthetical "(e.g. RATIFIED or ...)" in a real task prompt parsed as
+    a fake required file "e.g", false-failing a run whose actual requested
+    doc was written correctly.
+    """
+    task = (
+        "Write your finding to docs/reviews/note.md. Recommended one-line "
+        "status-header edit (e.g. RATIFIED or leave as PROPOSED with reason)."
+    )
+    all_edits = ["docs/reviews/note.md"]
+    output = "Wrote docs/reviews/note.md"
+
+    evidence = spec_conformance_check(task, all_edits, output)
+    assert evidence.status == VerificationStatus.PASSED
+    assert "e.g" not in evidence.details.get("found", [])
+
+
 # ── SemanticCheck wire-up tests ────────────────────────────────────
 
 

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from forge_sdk.agents.types import AgentContext, AgentResult, AgentStep
+from forge_sdk.text_tokens import FILE_PATH_TOKEN, is_real_file_token
 from forge_sdk.verifiers import SemanticCheck as _SemanticCheck
 from forge_sdk.verifiers import VerificationEvidence, VerificationStatus
 from forge_sdk.verifiers import spec_conformance_check as _spec_conformance_check
@@ -96,7 +97,7 @@ _READ_ONLY_SCOPED_TAIL = re.compile(
 )
 
 # Advisory partial-completion detection (blackbox2/PLAYBOOK-forge-fanout.md §9) — downgrades a SUCCESS to flagged-for-review, never to a failure.
-_FILE_PATH_TOKEN = re.compile(r"\b[\w][\w./-]*\.[A-Za-z]{1,5}\b")
+_FILE_PATH_TOKEN = FILE_PATH_TOKEN
 _TARGET_EXCLUDE_CONTEXT = re.compile(
     r"\b(do\s+not\s+(?:edit|modify|write|change|touch)|"
     r"don'?t\s+(?:edit|modify|write|change|touch)|"
@@ -725,7 +726,7 @@ class ReactAgent:
         for match in _FILE_PATH_TOKEN.finditer(task):
             preceding = task[max(prev_end, match.start() - window) : match.start()]
             nearest_exclude, nearest_action = ReactAgent._nearest_context(preceding)
-            if nearest_action > nearest_exclude:
+            if nearest_action > nearest_exclude and is_real_file_token(match.group(0)):
                 targets.append(match.group(0))
             prev_end = match.end()
         return targets
