@@ -57,7 +57,8 @@ class VertexProvider:
 
     def __init__(
         self,
-        api_key: str | None = None,  # unused (ADC-only); accepted for ForgeConfig.create_model() compat
+        api_key: str
+        | None = None,  # unused (ADC-only); accepted for ForgeConfig.create_model() compat
         base_url: str = "",
         model: str = "gemini-2.5-flash",
         project: str | None = None,
