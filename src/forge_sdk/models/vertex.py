@@ -33,7 +33,8 @@ class VertexProvider:
 
     def __init__(
         self,
-        api_key: str | None = None,  # unused (ADC-only); accepted for ForgeConfig.create_model() compat
+        api_key: str
+        | None = None,  # unused (ADC-only); accepted for ForgeConfig.create_model() compat
         base_url: str = "",  # unused; accepted for ForgeConfig.create_model() compat
         model: str = "gemini-2.5-flash",
         project: str | None = None,
@@ -130,15 +131,25 @@ class VertexProvider:
     def _parse_response(self, response: genai_types.GenerateContentResponse) -> ModelResponse:
         candidates = response.candidates or []
         candidate = candidates[0] if candidates else None
-        parts = candidate.content.parts if candidate and candidate.content and candidate.content.parts else []
+        parts = (
+            candidate.content.parts
+            if candidate and candidate.content and candidate.content.parts
+            else []
+        )
         content = "".join(p.text for p in parts if p.text)
         tool_calls = [
-            {"id": p.function_call.id or "", "name": p.function_call.name or "", "arguments": p.function_call.args or {}}
+            {
+                "id": p.function_call.id or "",
+                "name": p.function_call.name or "",
+                "arguments": p.function_call.args or {},
+            }
             for p in parts
             if p.function_call
         ]
         usage = response.usage_metadata
-        finish_reason = candidate.finish_reason.value if candidate and candidate.finish_reason else ""
+        finish_reason = (
+            candidate.finish_reason.value if candidate and candidate.finish_reason else ""
+        )
         return ModelResponse(
             content=content,
             reasoning=None,
@@ -171,7 +182,9 @@ class VertexProvider:
             tools=tools,
             system_instruction=system_instruction,
         )
-        response = self._client.models.generate_content(model=self._model, contents=contents, config=config)
+        response = self._client.models.generate_content(
+            model=self._model, contents=contents, config=config
+        )
         return self._parse_response(response)
 
     def complete_stream(
