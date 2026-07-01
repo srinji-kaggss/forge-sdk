@@ -15,6 +15,7 @@ pub mod event;
 pub mod guard;
 pub mod permission;
 pub mod port;
+pub mod renderer;
 pub mod router;
 pub mod result;
 pub mod session;
