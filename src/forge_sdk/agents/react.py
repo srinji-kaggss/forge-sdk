@@ -749,7 +749,7 @@ class ReactAgent:
         exist; an absent gate is reported honestly, not silently assumed.
         """
         base = Path(cwd).expanduser()
-        if (base / "Cargo.toml").is_file():
+        if any(f.endswith(".rs") for f in edited_files) and (base / "Cargo.toml").is_file():
             return "cargo build --quiet"
         if any(f.endswith(".py") for f in edited_files) and (
             (base / "pyproject.toml").is_file() or (base / "setup.py").is_file()

@@ -64,6 +64,19 @@ def test_detect_verify_command_returns_none_when_no_project_markers(tmp_path):
     assert agent._detect_verify_command(str(tmp_path), ["notes.md"]) is None
 
 
+def test_detect_verify_command_skips_cargo_build_when_no_rust_file_edited(tmp_path):
+    """Live bug: a pure doc-review task (write only docs/review.md) in a
+    Cargo repo triggered `cargo build --quiet` on the whole crate anyway,
+    failing on a pre-existing, task-unrelated dependency-fetch error and
+    reporting the task FAILED even though the review doc was written fine.
+    The Python branch below already scopes to edited .py files; the Rust
+    branch didn't have the equivalent check.
+    """
+    (tmp_path / "Cargo.toml").write_text(CARGO_TOML)
+    agent = _agent()
+    assert agent._detect_verify_command(str(tmp_path), ["docs/review.md"]) is None
+
+
 async def test_run_verify_command_passes_on_valid_rust(tmp_path):
     (tmp_path / "Cargo.toml").write_text(CARGO_TOML)
     src = tmp_path / "src"
