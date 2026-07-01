@@ -26,6 +26,14 @@ pub struct SandboxRoot {
     dir: Dir,
 }
 
+impl Clone for SandboxRoot {
+    fn clone(&self) -> Self {
+        Self {
+            dir: self.dir.try_clone().expect("SandboxRoot::clone: Dir::try_clone failed"),
+        }
+    }
+}
+
 impl SandboxRoot {
     /// Open a new sandbox rooted at `path`.
     ///

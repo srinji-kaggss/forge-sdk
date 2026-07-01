@@ -36,12 +36,7 @@ pub trait Tool: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LifecycleStage {
-    PreToolUse,
-    PostToolUse,
-    PreModelCall,
-    PostModelCall,
-}
+pub enum LifecycleStage { PreToolUse, PostToolUse, PreModelCall, PostModelCall }
 
 pub enum HookAction {
     Continue,
@@ -77,15 +72,11 @@ impl AgentState {
         if self.steps.len() as u32 >= self.max_steps {
             return Some(format!("Max steps ({}) reached", self.max_steps));
         }
-        if let Some(max_tokens) = self.max_tokens {
-            if self.total_tokens >= max_tokens {
-                return Some(format!("Max tokens ({}) reached", max_tokens));
-            }
+        if let Some(mt) = self.max_tokens {
+            if self.total_tokens >= mt { return Some(format!("Max tokens ({}) reached", mt)); }
         }
-        if let Some(max_cost) = self.max_cost {
-            if self.total_cost >= max_cost {
-                return Some(format!("Max cost ({}) reached", max_cost));
-            }
+        if let Some(mc) = self.max_cost {
+            if self.total_cost >= mc { return Some(format!("Max cost ({}) reached", mc)); }
         }
         None
     }
@@ -94,13 +85,10 @@ impl AgentState {
 #[async_trait]
 pub trait Agent: Send + Sync {
     async fn run(&mut self, state: &mut AgentState) -> AgentResult;
-    async fn run_with_events(
-        &mut self,
-        state: &mut AgentState,
-        event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
-    ) -> AgentResult;
+    async fn run_with_events(&mut self, state: &mut AgentState, event_tx: tokio::sync::mpsc::Sender<AgentEvent>) -> AgentResult;
 }
 
+#[allow(dead_code)]
 pub struct LifecycleAgent {
     model_port: Arc<dyn ModelPort>,
     tools: Vec<Box<dyn Tool<Input = serde_json::Value, Output = serde_json::Value>>>,
@@ -115,27 +103,160 @@ impl LifecycleAgent {
     ) -> Self {
         Self { model_port, tools, hooks }
     }
-
     fn find_tool(&self, name: &str) -> Option<&dyn Tool<Input = serde_json::Value, Output = serde_json::Value>> {
         self.tools.iter().find(|t| t.name() == name).map(|b| b.as_ref())
     }
 }
 
+async fn run_hooks(
+    hooks: &[Box<dyn LifecycleHook>],
+    stage: &LifecycleStage,
+    state: &mut AgentState,
+) -> Result<(), String> {
+    for hook in hooks {
+        match hook.on_stage(stage, state).await {
+            HookAction::Shutdown => {
+                return Err(format!("Hook '{}' shutdown at {:?}", hook.name(), stage));
+            }
+            _ => continue,
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Agent for LifecycleAgent {
     async fn run(&mut self, state: &mut AgentState) -> AgentResult {
-        let _ = self; // placeholder
-        AgentResult::new_success(&state.steps)
+        loop {
+            if let Some(reason) = state.should_stop() {
+                return AgentResult::new_premature_shutdown(reason, &state.steps);
+            }
+            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PreModelCall, state).await {
+                return AgentResult::new_premature_shutdown(reason, &state.steps);
+            }
+            let port: &dyn ModelPort = match state.model_port.as_ref() {
+                Some(p) => p.as_ref(),
+                None => self.model_port.as_ref(),
+            };
+            let mut user_msg = std::collections::HashMap::new();
+            user_msg.insert("role".to_string(), "user".to_string());
+            user_msg.insert("content".to_string(), state.task.as_inner().clone());
+            let response = match port.generate("", &vec![user_msg]).await {
+                Ok(r) => r,
+                Err(e) => return AgentResult::new_premature_shutdown(
+                    format!("Model error: {:?}", e), &state.steps,
+                ),
+            };
+            state.total_tokens = state.total_tokens.saturating_add(response.total_tokens());
+            state.total_cost += response.input_tokens as f64 * 0.000001
+                + response.output_tokens as f64 * 0.000002;
+            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PostModelCall, state).await {
+                return AgentResult::new_premature_shutdown(reason, &state.steps);
+            }
+            let tool_calls = response.tool_calls;
+            if tool_calls.is_empty() {
+                return AgentResult::new_success(&state.steps);
+            }
+            for tc in &tool_calls {
+                let mut skip_result = None;
+                for hook in &self.hooks {
+                    if let HookAction::SkipToolUse { result } =
+                        hook.on_stage(&LifecycleStage::PreToolUse, state).await
+                    {
+                        skip_result = Some(result);
+                    }
+                }
+                if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PreToolUse, state).await {
+                    return AgentResult::new_premature_shutdown(reason, &state.steps);
+                }
+                let ctx = crate::permission::PermissionContext {
+                    action_label: format!("tool:{}", tc.name),
+                    classification: crate::permission::ActionClassification::Safe,
+                    tool_name: tc.name.clone(),
+                    tool_args: tc.arguments.clone(),
+                    cwd: state.cwd.clone(),
+                    sandbox: state.sandbox.clone(),
+                    files_read_in_session: state.files_read_in_session.clone(),
+                    permission_mode: state.permission_mode.clone(),
+                    task: state.task.clone(),
+                };
+                let _decision = state.permission_gate.evaluate(&ctx).await;
+                let obs = if let Some(skip) = skip_result {
+                    skip.to_string()
+                } else if let Some(tool) = self.find_tool(&tc.name) {
+                    let input = serde_json::json!(tc.arguments);
+                    match tool.call(input, &state.sandbox).await {
+                        Ok(o) => serde_json::to_string(&o).unwrap_or_else(|_| "{}".into()),
+                        Err(e) => format!("Tool error: {:?}", e),
+                    }
+                } else {
+                    format!("Unknown tool: {}", tc.name)
+                };
+                if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PostToolUse, state).await {
+                    return AgentResult::new_premature_shutdown(reason, &state.steps);
+                }
+                let step = crate::step::AgentStep::new(
+                    state.steps.len() as u32,
+                    &response.content,
+                    &tc.name,
+                    tc.arguments.clone(),
+                    obs,
+                    None,
+                    response.input_tokens + response.output_tokens,
+                    response.input_tokens as f64 * 0.000001
+                        + response.output_tokens as f64 * 0.000002 ,
+                    Some(tc.name.clone()),
+                    None,
+                    false,
+                    state.should_stop().is_some(),
+                );
+                state.steps.push(step);
+            }
+        }
     }
 
     async fn run_with_events(
         &mut self,
         state: &mut AgentState,
-        _event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
+        event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
     ) -> AgentResult {
-        self.run(state).await
+        let _ = event_tx.try_send(AgentEvent::RunStart(
+            crate::event::RunStartEvent {
+                correlation: crate::event::Correlation {
+                    trace_id: String::new(),
+                    run_id: String::new(),
+                    model: String::new(),
+                    provider: String::new(),
+                    config_version: String::new(),
+                },
+                task: state.task.as_inner().clone(),
+                model: String::new(),
+                provider: String::new(),
+                max_steps: state.max_steps,
+                max_tokens: state.max_tokens.unwrap_or(0),
+            },
+        ));
+        let result = self.run(state).await;
+        let _ = event_tx.try_send(AgentEvent::RunEnd(
+            crate::event::RunEndEvent {
+                correlation: crate::event::Correlation {
+                    trace_id: String::new(),
+                    run_id: String::new(),
+                    model: String::new(),
+                    provider: String::new(),
+                    config_version: String::new(),
+                },
+                success: result.success,
+                total_steps: result.total_steps,
+                total_tokens: result.total_tokens,
+                total_cost: result.total_cost,
+                duration_ms: 0,
+            },
+        ));
+        result
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lifecycle_stage_equality() {
+    fn test_lifecycle_stage_eq() {
         assert_eq!(LifecycleStage::PreToolUse, LifecycleStage::PreToolUse);
         assert_ne!(LifecycleStage::PreToolUse, LifecycleStage::PostToolUse);
     }

@@ -227,6 +227,7 @@ fn dirs_or_default() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use super::test_helpers::EnvGuard;
     use super::*;
     use std::env;
     use tempfile::TempDir;
@@ -326,24 +327,25 @@ mod tests {
     }
 }
 
-/// RAII guard that saves an env var on creation and restores it on drop.
-struct EnvGuard {
-    key: String,
-    old: Option<String>,
-}
-
-impl EnvGuard {
-    fn new(key: &str) -> Self {
-        let old = env::var(key).ok();
-        Self { key: key.to_string(), old }
+#[cfg(test)]
+mod test_helpers {
+    use std::env;
+    pub(super) struct EnvGuard {
+        key: String,
+        old: Option<String>,
     }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.old {
-            Some(v) => env::set_var(&self.key, v),
-            None => env::remove_var(&self.key),
+    impl EnvGuard {
+        pub(super) fn new(key: &str) -> Self {
+            let old = env::var(key).ok();
+            Self { key: key.to_string(), old }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(v) => env::set_var(&self.key, v),
+                None => env::remove_var(&self.key),
+            }
         }
     }
 }
