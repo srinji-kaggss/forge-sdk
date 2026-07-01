@@ -18,13 +18,12 @@ import ast
 import asyncio
 import json
 import re
-import subprocess
+import shlex
 from pathlib import Path
 from typing import Any
 
-from forge_sdk.tools.types import ToolSpec, ToolResult
-from forge_sdk.security import _check_path_safety, _check_command_safety
-import shlex
+from forge_sdk.security import _check_command_safety, _check_path_safety
+from forge_sdk.tools.types import ToolResult, ToolSpec
 
 
 async def run_tests(path: str = ".", args: str = "-x --tb=short -q") -> ToolResult:

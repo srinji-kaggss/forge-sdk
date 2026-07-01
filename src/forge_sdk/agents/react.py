@@ -28,7 +28,9 @@ from pathlib import Path
 from typing import Any
 
 from forge_sdk.agents.types import AgentContext, AgentResult, AgentStep
+from forge_sdk.verifiers import SemanticCheck as _SemanticCheck
 from forge_sdk.verifiers import VerificationEvidence, VerificationStatus
+from forge_sdk.verifiers import spec_conformance_check as _spec_conformance_check
 
 # Issue #23: AgentContext.cwd was recorded but never threaded into the
 # actual tool-call boundary -- every filesystem/shell/search/verify tool
@@ -511,12 +513,14 @@ class ReactAgent:
         verify_command: str | None = None,
         auto_verify: bool = True,
         verify_timeout_seconds: float = 120.0,
+        semantic_check: _SemanticCheck | None = None,
     ) -> None:
         self._model = model
         self._tools = tools
         self._tracer = tracer
         self._audit = audit
         self._verifier = verifier
+        self._semantic_check = semantic_check
         self._guard = loop_guard or LoopGuard()
         self._max_retries = max_retries
         self._context = ContextManager(max_tokens=max_tokens)
@@ -760,7 +764,7 @@ class ReactAgent:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(), timeout=self._verify_timeout_seconds
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 await proc.wait()
                 return VerificationEvidence(
@@ -849,6 +853,35 @@ class ReactAgent:
                 else:
                     raise
         raise last_error
+
+    def _run_semantic_gate(
+        self,
+        task: str,
+        output: str,
+        all_edits: list[str],
+    ) -> VerificationEvidence | None:
+        if not self._semantic_check:
+            return None
+        if not all_edits:
+            return None
+        if not output.strip():
+            return None
+        if not self._semantic_check.applies():
+            return None
+        solution_summary = f"Modified {len(all_edits)} file(s): {', '.join(all_edits)}. Output: {output[:500]}"
+        return self._semantic_check.execute(
+            task_intent=task,
+            solution_summary=solution_summary,
+            solution_files=all_edits,
+        )
+
+    def _run_spec_conformance_gate(
+        self,
+        task: str,
+        output: str,
+        all_edits: list[str],
+    ) -> VerificationEvidence:
+        return _spec_conformance_check(task, all_edits, output)
 
     async def arun(self, context: AgentContext) -> AgentResult:
         """Async core — the canonical execution loop with observability."""
@@ -1133,6 +1166,23 @@ class ReactAgent:
                     if verify_cmd:
                         build_gate_ran = True
                         verification.append(await self._run_verify_command(verify_cmd, context.cwd))
+
+                # INV-207: semantic alignment check — catches shallow edits
+                semantic_evidence = self._run_semantic_gate(
+                    task=context.task,
+                    output=output,
+                    all_edits=all_edits,
+                )
+                if semantic_evidence:
+                    verification.append(semantic_evidence)
+
+                # L6: spec-conformance check — task-required artifacts in edits/output
+                spec_evidence = self._run_spec_conformance_gate(
+                    task=context.task,
+                    output=output,
+                    all_edits=all_edits,
+                )
+                verification.append(spec_evidence)
 
                 verification_passed = all(
                     v.status == VerificationStatus.PASSED for v in verification

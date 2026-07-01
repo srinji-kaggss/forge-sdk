@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -56,6 +57,87 @@ class VerificationConfig:
         ]
     )
     timeout_seconds: float = 30.0
+
+
+_SPEC_TARGET_ACTION_CONTEXT = re.compile(
+    r"\b(create|add|write|new|implement|remove|delete|append|update|"
+    r"edit|modify|insert|change|build|generate|fix|patch)\b",
+    re.IGNORECASE,
+)
+_SPEC_TARGET_EXCLUDE_CONTEXT = re.compile(
+    r"\b(do\s+not\s+(?:edit|modify|write|change|touch|create)|"
+    r"don'?t\s+(?:edit|modify|write|change|touch|create)|"
+    r"without\s+(?:editing|modifying|writing|changing|touching)|"
+    r"read(?:\s+only)?|leave\s+(?:alone|untouched)|except|other\s+than|"
+    r"itself|check|verify|review|test\s+for|peek\s+at)\b",
+    re.IGNORECASE,
+)
+_SPEC_FILE_PATH_TOKEN = re.compile(r"\b[\w][\w./-]*\.[A-Za-z]{1,5}\b")
+
+
+def _spec_nearest_context(preceding: str) -> tuple[int, int]:
+    exclude = list(_SPEC_TARGET_EXCLUDE_CONTEXT.finditer(preceding))
+    action = list(_SPEC_TARGET_ACTION_CONTEXT.finditer(preceding))
+    return (
+        exclude[-1].end() if exclude else -1,
+        action[-1].end() if action else -1,
+    )
+
+
+def spec_conformance_check(
+    task: str,
+    all_edits: list[str],
+    output: str,
+) -> VerificationEvidence:
+    """L6: Basic spec-conformance check.
+
+    Extracts file-like artifact paths from the task description and
+    verifies they were edited or appear in the output.
+    Simple keyword matching (not an LLM call).
+    """
+    from pathlib import Path
+
+    task_files = set()
+    prev_end = 0
+    for match in _SPEC_FILE_PATH_TOKEN.finditer(task):
+        preceding = task[max(prev_end, match.start() - 80):match.start()]
+        nearest_exclude, nearest_action = _spec_nearest_context(preceding)
+        if nearest_action > nearest_exclude:
+            task_files.add(match.group(0))
+        prev_end = match.end()
+
+    if not task_files:
+        return VerificationEvidence(
+            gate_name="spec_conformance",
+            status=VerificationStatus.SKIPPED,
+            message="No explicit file artifacts found in task description",
+        )
+
+    edited_lower = {p.lower() for p in all_edits}
+    edited_names = {Path(p).name.lower() for p in all_edits}
+    output_lower = output.lower()
+
+    missing = []
+    for f in sorted(task_files):
+        fl = f.lower()
+        if fl not in edited_lower and Path(fl).name.lower() not in edited_names:
+            if fl not in output_lower:
+                missing.append(f)
+
+    if missing:
+        return VerificationEvidence(
+            gate_name="spec_conformance",
+            status=VerificationStatus.FAILED,
+            message=f"Required artifacts missing from edits/output: {missing}",
+            details={"missing": missing, "required": sorted(task_files)},
+        )
+
+    return VerificationEvidence(
+        gate_name="spec_conformance",
+        status=VerificationStatus.PASSED,
+        message=f"All {len(task_files)} task-specified artifacts accounted for",
+        details={"found": sorted(task_files)},
+    )
 
 
 class SemanticCheck:

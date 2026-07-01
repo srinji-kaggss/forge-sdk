@@ -17,8 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from forge_sdk.tools.types import ToolSpec, ToolResult
-
+from forge_sdk.tools.types import ToolResult, ToolSpec
 
 _episode_store: list[dict[str, Any]] = []
 

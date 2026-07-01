@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from forge_sdk.models.types import ModelResponse, ModelChunk, Usage
+from forge_sdk.models.types import ModelChunk, ModelResponse, Usage
 
 
 class OllamaProvider:

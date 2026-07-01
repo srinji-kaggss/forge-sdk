@@ -14,13 +14,10 @@ Every episode-derived text is sanitized before becoming a PromptFragment.
 
 from __future__ import annotations
 
-import os
 import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
 
 # ── L5: Sensitive paths ──────────────────────────────────────────────────────
 
@@ -217,12 +214,12 @@ def _check_command_safety(command: str) -> str | None:
     # L3: Dangerous commands
     for pattern in _DANGEROUS_CMD_PATTERNS:
         if pattern.search(command):
-            return f"BLOCKED: dangerous command pattern matched"
+            return "BLOCKED: dangerous command pattern matched"
 
     # L2: Network egress
     for pattern in _NETWORK_CMD_PATTERNS:
         if pattern.search(command):
-            return f"BLOCKED: network egress not allowed"
+            return "BLOCKED: network egress not allowed"
 
     # L4: Block arbitrary code execution via interpreters
     if re.search(r"\bpython3?\s+-c\b", command, re.IGNORECASE):
