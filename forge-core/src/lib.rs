@@ -13,6 +13,7 @@ pub mod permission;
 pub mod port;
 pub mod result;
 pub mod step;
+pub mod verifier;
 
 // -- re-exports: event -------------------------------------------------------
 pub use event::{

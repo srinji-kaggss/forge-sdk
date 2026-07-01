@@ -31,6 +31,20 @@ impl<T> Tainted<T> {
         Self(value)
     }
 
+    /// Public constructor for cross-crate construction.
+    ///
+    /// **WARNING:** This bypasses all containment analysis. Only use when:
+    /// - Constructing test fixtures
+    /// - Bridging from an external I/O subsystem that has already done
+    ///   its own validation
+    /// - FFI boundary where the caller is responsible for enforcement
+    ///
+    /// The canonical path is through `pub(crate)` I/O modules →
+    /// `Tainted::new()` → `contain()` → `Trusted<T>`.
+    pub fn new_unchecked(value: T) -> Self {
+        Self(value)
+    }
+
     /// Run containment analysis on this tainted value.
     ///
     /// Returns `ContainmentResult::Safe` if the value passes all configured
