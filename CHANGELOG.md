@@ -3,6 +3,77 @@
 All notable changes to forge-sdk are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [Unreleased] — targeting 0.7.0
+
+Eight PRs open against `main`, none merged yet — this section documents what's
+pending Director review, not what's shipped. All found and fixed by dogfooding
+forge against real work (semantic-memory-brain, next-gen-browser-engine,
+logicalworks- #349 module-coverage debt), not code review.
+
+### Added
+- **Vertex AI (Gemini) provider**, rebuilt twice this batch: first as a
+  hand-rolled REST client (ADC via `gcloud` subprocess + raw `httpx`), then
+  replaced with the official `google-genai` SDK once real dispatches surfaced
+  a `finishReason=MALFORMED_FUNCTION_CALL` failure mode the SDK appears to
+  avoid (observed once in a side-by-side comparison, not asserted as
+  guaranteed). Defaults to `northamerica-northeast1` (Canada-residency
+  requirement — `northamerica-northeast2` 400s). (#41, #48)
+- **Native provider tool-calling** (`agents/react.py`, all 5 model providers):
+  replaces free-text-JSON-then-regex-parse with each provider's real
+  function/tool-calling API. `ToolRegistry.to_prompt_schemas()` existed and
+  was tested but never called anywhere in the actual agent loop — this wires
+  it through. Root-cause fix for the entire class of parsing bugs below,
+  not another patch to the parser. (#46)
+- **Python-syntax pre-write guard** (`tools/filesystem.py`): `write_file`
+  now `ast.parse()`s `.py` content before writing and refuses (with
+  line/column/message) if it doesn't parse, same `force=true` escape hatch
+  as the existing elision/shrink guards. Found live: a model edit replaced
+  two unrelated `\n` escapes with literal newlines while making an
+  unrelated correct change, corrupting the file silently. (#47)
+
+### Fixed
+- **JSON parser rejected literal control characters in string values**
+  (`agents/react.py`): `json.loads()` in strict mode raises on a raw
+  newline inside a string — common enough in real model output that it
+  caused a byte-identical retry loop (the model's JSON was fine from its
+  own perspective). `strict=False` at all three parse-strategy call sites. (#42)
+- **`cargo build` verify-gate ran on unrelated Rust repos for non-Rust
+  edits** (`agents/react.py`): `_detect_verify_command` triggered on any
+  repo with a `Cargo.toml`, regardless of whether an edited file was
+  actually `.rs` — unlike the parallel Python-branch check three lines
+  below it. A pure doc-review task failed on a pre-existing, task-unrelated
+  dependency-fetch error in the repo's *entire* crate. Now scoped to
+  `any(f.endswith(".rs") for f in edited_files)`, matching the Python
+  branch's existing pattern. (#43)
+- **Duplicate file-token regex, same false-positive in two places**
+  (`text_tokens.py`, new): `verifiers/__init__.py` and `agents/react.py`
+  each independently defined the identical regex for detecting file-path
+  mentions in a task description, both with the same blind spot — a
+  parenthetical `(e.g. RATIFIED or ...)` parsed as a fake required file
+  `"e.g"`. Collapsed into one canonical regex + denylist. (#44)
+- **Phantom-edit false-success via a scoped read-only negation**
+  (`agents/react.py`): `"Do not edit code. Write docs/X.md."` has an
+  unscoped `"Do not edit"` (the word right after it, `"code."`, isn't a
+  recognized scoped-tail target), so `_task_implies_edits` returned
+  `False` for the *entire* task — disabling the has-edits safety net even
+  though the next sentence named a real write target. A real run made zero
+  `write_file` calls and still reported `Status: SUCCESS` on the strength
+  of its own closing summary sentence. Fixed by deferring to
+  `_named_edit_targets()` (already used elsewhere in this file) when an
+  unscoped negation is found. The most severe bug found this batch. (#45)
+- **Empty model response silently became a `finish` with blank output**
+  (`agents/react.py`): live-reproduced via Gemini's own
+  `MALFORMED_FUNCTION_CALL` (content empty, no tool_calls at all) — no
+  braces for any parse strategy to even attempt, so it fell through to the
+  same bottom fallback as a genuine no-braces prose completion. Empty
+  content is never a valid finish; now treated as `__parse_failed__`. (#46)
+- **Native tool call left no readable trace in message history**
+  (`agents/react.py`): a native tool call leaves `response.content` empty,
+  so the assistant turn recorded in history was blank — on the next turn
+  the model had no way to tell "Tool output: ..." was the result of its
+  own prior action, and in a real run this produced a stuck loop
+  re-issuing a call the LoopGuard had already blocked. (#46)
+
 ## [0.6.0] - 2026-06-30
 
 Named-target coverage detector, INV-201 verification pipeline completion,
