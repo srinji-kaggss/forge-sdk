@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["FailureReason"],"struct":["AgentResult","ChangeManifest","RollbackPlan","VerificationEvidence"]};
