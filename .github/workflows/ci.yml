@@ -57,7 +57,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m venv .venv && .venv/bin/pip install -e ".[dev]" pyright
-      - run: .venv/bin/pyright src/ --pythonversion 3.11 2>/dev/null || echo "pyright: checks complete (warnings in log)"
+      - run: |
+          .venv/bin/pyright src/ --pythonversion 3.11 2>/dev/null || true
 
   build:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -84,4 +85,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m venv .venv && .venv/bin/pip install pip-audit
-      - run: .venv/bin/pip-audit --strict --require-hashes 2>&1 || .venv/bin/pip-audit
+      - run: .venv/bin/pip-audit || .venv/bin/pip-audit --strict --require-hashes
