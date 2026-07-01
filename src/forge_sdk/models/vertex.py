@@ -1,10 +1,10 @@
 """Google Cloud Vertex AI (Gemini) provider — satisfies ModelPort protocol.
 
-Auth is Application Default Credentials, resolved by shelling out to
-`gcloud auth application-default print-access-token` — zero new dependency
-(no google-auth / google-cloud-aiplatform SDK). The token lives only in this
-process's memory for its TTL window; it is never printed, logged, traced, or
-written to disk by this module.
+Built on the official `google-genai` SDK (https://pypi.org/project/google-genai/)
+rather than hand-rolled REST calls. The SDK's `vertexai=True` client mode
+resolves Application Default Credentials itself (via `google-auth`, already
+a transitive dependency of google-genai) — no manual `gcloud`
+subprocess/token-TTL bookkeeping needed.
 
 Region defaults to northamerica-northeast1 (Montreal) per the standing
 Canada-data-residency requirement. northamerica-northeast2 (Toronto) was
@@ -15,41 +15,17 @@ do not switch the default without re-verifying that region works.
 from __future__ import annotations
 
 import os
-import subprocess
-import time
-from typing import Any
 
-import httpx
+from google import genai
+from google.genai import types as genai_types
 
 from forge_sdk.models.types import ModelChunk, ModelResponse, Usage
 
-_TOKEN_TTL_SECONDS = 45 * 60  # ADC access tokens last ~1h; refresh before expiry
 _DEFAULT_LOCATION = "northamerica-northeast1"
 
 
 class VertexAuthError(RuntimeError):
-    """Raised when an ADC access token or required config cannot be resolved."""
-
-
-def _fetch_access_token() -> str:
-    try:
-        result = subprocess.run(
-            ["gcloud", "auth", "application-default", "print-access-token"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise VertexAuthError(f"gcloud invocation failed: {exc}") from exc
-    if result.returncode != 0:
-        raise VertexAuthError(
-            "gcloud auth application-default print-access-token failed "
-            f"(exit {result.returncode}): {result.stderr.strip()}"
-        )
-    token = result.stdout.strip()
-    if not token:
-        raise VertexAuthError("gcloud returned an empty access token")
-    return token
+    """Raised when required Vertex config (project) is missing."""
 
 
 class VertexProvider:
@@ -58,12 +34,12 @@ class VertexProvider:
     def __init__(
         self,
         api_key: str | None = None,  # unused (ADC-only); accepted for ForgeConfig.create_model() compat
-        base_url: str = "",
+        base_url: str = "",  # unused; accepted for ForgeConfig.create_model() compat
         model: str = "gemini-2.5-flash",
         project: str | None = None,
         location: str | None = None,
     ) -> None:
-        del api_key  # ADC-only; accepted for ForgeConfig.create_model() kwarg compatibility
+        del api_key, base_url
         self._model = model
         self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
         self._location = location or os.environ.get("GOOGLE_CLOUD_LOCATION", _DEFAULT_LOCATION)
@@ -71,14 +47,7 @@ class VertexProvider:
             raise VertexAuthError(
                 "GOOGLE_CLOUD_PROJECT is not set — the vertex provider requires an explicit project"
             )
-        host = f"{self._location}-aiplatform.googleapis.com"
-        self._base_url = base_url.rstrip("/") or (
-            f"https://{host}/v1/projects/{self._project}/locations/{self._location}"
-            f"/publishers/google/models/{self._model}"
-        )
-        self._client = httpx.Client(timeout=120.0)
-        self._token = ""
-        self._token_fetched_at = 0.0
+        self._client = genai.Client(vertexai=True, project=self._project, location=self._location)
 
     @property
     def name(self) -> str:
@@ -100,25 +69,14 @@ class VertexProvider:
     def supports_reasoning(self) -> bool:
         return False
 
-    def _access_token(self) -> str:
-        now = time.monotonic()
-        if not self._token or (now - self._token_fetched_at) > _TOKEN_TTL_SECONDS:
-            self._token = _fetch_access_token()
-            self._token_fetched_at = now
-        return self._token
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._access_token()}",
-            "Content-Type": "application/json",
-        }
-
     @staticmethod
-    def _to_gemini_contents(messages: list[dict]) -> tuple[dict | None, list[dict]]:
-        """Translate OpenAI-style messages into Gemini contents + systemInstruction.
+    def _to_gemini_contents(messages: list[dict]) -> tuple[str | None, list[dict]]:
+        """Translate OpenAI-style messages into Gemini contents + system instruction.
 
         Gemini has no "system" role in `contents`; system turns are collected
-        into a separate systemInstruction block instead.
+        into a separate system_instruction string instead. Returns plain
+        dicts (ContentDict) — the SDK accepts these directly, no need to
+        construct typed genai_types.Content objects.
         """
         system_parts: list[str] = []
         contents: list[dict] = []
@@ -130,74 +88,69 @@ class VertexProvider:
                 system_parts.append(content)
                 continue
             contents.append({"role": role_map.get(role, "user"), "parts": [{"text": content}]})
-        system_instruction = (
-            {"parts": [{"text": "\n\n".join(system_parts)}]} if system_parts else None
-        )
+        system_instruction = "\n\n".join(system_parts) if system_parts else None
         return system_instruction, contents
 
     @staticmethod
-    def _openai_tools_to_gemini_declarations(tools: list[dict]) -> list[dict]:
-        """Convert forge's canonical OpenAI-shaped tool schemas (ToolSpec.to_prompt_schema())
-        into Gemini's functionDeclarations shape. One functionDeclarations block
-        holding all tools, per Gemini's REST API contract.
+    def _openai_tools_to_gemini_tool(tools: list[dict]) -> genai_types.Tool:
+        """Convert forge's canonical OpenAI-shaped tool schemas
+        (ToolSpec.to_prompt_schema()) into one genai_types.Tool holding all
+        function declarations — the SDK validates/normalizes the JSON
+        Schema itself rather than forge hand-building the request dict.
         """
         declarations = []
         for tool in tools:
             function = tool.get("function", tool)  # tolerate a bare function dict too
             declarations.append(
-                {
-                    "name": function.get("name", ""),
-                    "description": function.get("description", ""),
-                    "parameters": function.get("parameters", {"type": "object", "properties": {}}),
-                }
+                genai_types.FunctionDeclaration(
+                    name=function.get("name", ""),
+                    description=function.get("description", ""),
+                    parameters=function.get("parameters", {"type": "object", "properties": {}}),
+                )
             )
-        return [{"functionDeclarations": declarations}]
+        return genai_types.Tool(function_declarations=declarations)
 
-    def _build_payload(
+    def _build_config(
         self,
-        messages: list[dict],
         *,
         temperature: float,
         max_tokens: int | None,
         stop: list[str] | None,
-        tools: list[dict] | None = None,
-    ) -> dict[str, Any]:
-        system_instruction, contents = self._to_gemini_contents(messages)
-        generation_config: dict[str, Any] = {"temperature": temperature}
-        if max_tokens is not None:
-            generation_config["maxOutputTokens"] = max_tokens
-        if stop:
-            generation_config["stopSequences"] = stop
-        payload: dict[str, Any] = {"contents": contents, "generationConfig": generation_config}
-        if system_instruction is not None:
-            payload["systemInstruction"] = system_instruction
-        if tools:
-            payload["tools"] = self._openai_tools_to_gemini_declarations(tools)
-        return payload
+        tools: list[dict] | None,
+        system_instruction: str | None,
+    ) -> genai_types.GenerateContentConfig:
+        return genai_types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+            stop_sequences=stop or None,
+            tools=[self._openai_tools_to_gemini_tool(tools)] if tools else None,
+            system_instruction=system_instruction,
+        )
 
-    def _parse_response(self, data: dict[str, Any]) -> ModelResponse:
-        candidates = data.get("candidates") or []
-        candidate = candidates[0] if candidates else {}
-        parts = candidate.get("content", {}).get("parts", [])
-        content = "".join(p.get("text", "") for p in parts if "text" in p)
+    def _parse_response(self, response: genai_types.GenerateContentResponse) -> ModelResponse:
+        candidates = response.candidates or []
+        candidate = candidates[0] if candidates else None
+        parts = candidate.content.parts if candidate and candidate.content and candidate.content.parts else []
+        content = "".join(p.text for p in parts if p.text)
         tool_calls = [
-            {"id": "", "name": p["functionCall"].get("name", ""), "arguments": p["functionCall"].get("args", {})}
+            {"id": p.function_call.id or "", "name": p.function_call.name or "", "arguments": p.function_call.args or {}}
             for p in parts
-            if "functionCall" in p
+            if p.function_call
         ]
-        usage_data = data.get("usageMetadata", {})
+        usage = response.usage_metadata
+        finish_reason = candidate.finish_reason.value if candidate and candidate.finish_reason else ""
         return ModelResponse(
             content=content,
             reasoning=None,
             model=self._model,
             provider="vertex",
             usage=Usage(
-                prompt_tokens=usage_data.get("promptTokenCount", 0),
-                completion_tokens=usage_data.get("candidatesTokenCount", 0),
-                total_tokens=usage_data.get("totalTokenCount", 0),
+                prompt_tokens=usage.prompt_token_count or 0 if usage else 0,
+                completion_tokens=usage.candidates_token_count or 0 if usage else 0,
+                total_tokens=usage.total_token_count or 0 if usage else 0,
             ),
-            finish_reason=candidate.get("finishReason", ""),
-            raw=data,
+            finish_reason=finish_reason,
+            raw=response.model_dump() if hasattr(response, "model_dump") else {},
             tool_calls=tool_calls,
         )
 
@@ -210,16 +163,16 @@ class VertexProvider:
         stop: list[str] | None = None,
         tools: list[dict] | None = None,
     ) -> ModelResponse:
-        payload = self._build_payload(
-            messages, temperature=temperature, max_tokens=max_tokens, stop=stop, tools=tools
+        system_instruction, contents = self._to_gemini_contents(messages)
+        config = self._build_config(
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            tools=tools,
+            system_instruction=system_instruction,
         )
-        resp = self._client.post(
-            f"{self._base_url}:generateContent",
-            headers=self._headers(),
-            json=payload,
-        )
-        resp.raise_for_status()
-        return self._parse_response(resp.json())
+        response = self._client.models.generate_content(model=self._model, contents=contents, config=config)
+        return self._parse_response(response)
 
     def complete_stream(
         self,
@@ -232,7 +185,8 @@ class VertexProvider:
     ) -> list[ModelChunk]:
         # No caller in the ReactAgent loop uses complete_stream today (only
         # mesh.py delegates to it); satisfy the protocol via one complete()
-        # call wrapped as a single chunk instead of adding an unused SSE parser.
+        # call wrapped as a single chunk instead of adding an unused
+        # streaming consumer.
         response = self.complete(
             messages, temperature=temperature, max_tokens=max_tokens, stop=stop, tools=tools
         )
