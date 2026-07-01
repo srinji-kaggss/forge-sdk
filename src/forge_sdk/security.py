@@ -22,23 +22,56 @@ from pathlib import Path
 # ── L5: Sensitive paths ──────────────────────────────────────────────────────
 
 SENSITIVE_READ_PATHS = (
-    "/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/ssh/",
-    "/root/", "/proc/", "/sys/", "/dev/",
-    ".ssh/", ".aws/", ".config/", ".gnupg/",
-    ".env", ".npmrc", ".pypirc", ".netrc",
-    "id_rsa", "id_ed25519", "id_ecdsa",
-    "authorized_keys", "known_hosts",
-    ".bashrc", ".zshrc", ".profile", ".bash_profile",
-    ".git/config", ".git/credentials",
-    "keychain", "login.keychain",
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/etc/ssh/",
+    "/root/",
+    "/proc/",
+    "/sys/",
+    "/dev/",
+    ".ssh/",
+    ".aws/",
+    ".config/",
+    ".gnupg/",
+    ".env",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "authorized_keys",
+    "known_hosts",
+    ".bashrc",
+    ".zshrc",
+    ".profile",
+    ".bash_profile",
+    ".git/config",
+    ".git/credentials",
+    "keychain",
+    "login.keychain",
 )
 
 SENSITIVE_WRITE_PATHS = (
-    "/etc/", "/usr/", "/sys/", "/proc/", "/dev/", "/root/",
-    "/boot/", "/sbin/", "/bin/",
+    "/etc/",
+    "/usr/",
+    "/sys/",
+    "/proc/",
+    "/dev/",
+    "/root/",
+    "/boot/",
+    "/sbin/",
+    "/bin/",
     # /var/ is blocked except /var/folders/ (macOS temp) and /var/tmp/
-    ".ssh/", ".aws/", ".config/", ".gnupg/",
-    ".bashrc", ".zshrc", ".profile", ".bash_profile",
+    ".ssh/",
+    ".aws/",
+    ".config/",
+    ".gnupg/",
+    ".bashrc",
+    ".zshrc",
+    ".profile",
+    ".bash_profile",
     "authorized_keys",
     ".git/hooks/",
 )
@@ -85,6 +118,7 @@ _FILE_READ_CMDS = re.compile(
 )
 
 # ── L1: Path safety ──────────────────────────────────────────────────────────
+
 
 def _resolve_path(path: str, cwd: str = ".") -> Path:
     """Resolve a path relative to cwd, following symlinks."""
@@ -200,6 +234,7 @@ def _check_path_safety(
 
 # ── L3: Command safety ───────────────────────────────────────────────────────
 
+
 def _check_command_safety(command: str) -> str | None:
     """L2 NETWORK + L3 HOST + L5 DATA: Central command safety check for shell tool.
 
@@ -242,7 +277,10 @@ _INJECTION_PATTERNS = [
     re.compile(r"IGNORE\s+ALL\s+PREVIOUS\s+INSTRUCTIONS", re.IGNORECASE),
     re.compile(r"you\s+are\s+now\s+(?:a|an)\s+(?:different|new|evil|unrestricted)", re.IGNORECASE),
     re.compile(r"(?:developer|admin|root|god)\s+mode\s+(?:enabled|activated|on)", re.IGNORECASE),
-    re.compile(r"disregard\s+(?:all\s+)?(?:prior|previous|above)\s+(?:instructions|rules|guidelines)", re.IGNORECASE),
+    re.compile(
+        r"disregard\s+(?:all\s+)?(?:prior|previous|above)\s+(?:instructions|rules|guidelines)",
+        re.IGNORECASE,
+    ),
     re.compile(r"from\s+now\s+on.*?(?:always|never|must|will)\b", re.IGNORECASE),
     re.compile(r"</?(?:system|assistant|user|developer)>", re.IGNORECASE),
     re.compile(r"\[INST\]|\[/INST\]|###\s*system|###\s*assistant", re.IGNORECASE),
@@ -339,8 +377,11 @@ def contain_untrusted_text(
     """
     if not text:
         return ContainmentResult(
-            category=category, risk_score=0.0, quarantined=False,
-            raw_text="", truncated_excerpt="",
+            category=category,
+            risk_score=0.0,
+            quarantined=False,
+            raw_text="",
+            truncated_excerpt="",
         )
 
     phrase_hits = sum(1 for pattern in _INJECTION_PATTERNS if pattern.search(text))

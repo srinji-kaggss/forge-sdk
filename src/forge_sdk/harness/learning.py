@@ -206,9 +206,7 @@ class LearningStore:
             "total_episodes": total,
             "success_rate": successes / total if total > 0 else 0.0,
             "total_knowledge": len(self._knowledge),
-            "avg_tokens": (
-                sum(e.tokens_used for e in self._episodes) / total if total > 0 else 0
-            ),
+            "avg_tokens": (sum(e.tokens_used for e in self._episodes) / total if total > 0 else 0),
             "domains": list(set(e.domain for e in self._episodes)),
         }
 

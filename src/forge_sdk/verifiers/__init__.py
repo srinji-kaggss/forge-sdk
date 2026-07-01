@@ -100,7 +100,7 @@ def spec_conformance_check(
     task_files = set()
     prev_end = 0
     for match in _SPEC_FILE_PATH_TOKEN.finditer(task):
-        preceding = task[max(prev_end, match.start() - 80):match.start()]
+        preceding = task[max(prev_end, match.start() - 80) : match.start()]
         nearest_exclude, nearest_action = _spec_nearest_context(preceding)
         if nearest_action > nearest_exclude:
             task_files.add(match.group(0))
@@ -120,7 +120,11 @@ def spec_conformance_check(
     missing = []
     for f in sorted(task_files):
         fl = f.lower()
-        if fl not in edited_lower and Path(fl).name.lower() not in edited_names and fl not in output_lower:
+        if (
+            fl not in edited_lower
+            and Path(fl).name.lower() not in edited_names
+            and fl not in output_lower
+        ):
             missing.append(f)
 
     if missing:
@@ -208,13 +212,13 @@ class SemanticCheck:
         raw = response.content.strip()
 
         # Try to extract JSON from markdown code blocks
-        code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw, re.DOTALL)
+        code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
         if code_block_match:
             raw = code_block_match.group(1)
         else:
             # Find first { and last }
-            first_brace = raw.find('{')
-            last_brace = raw.rfind('}')
+            first_brace = raw.find("{")
+            last_brace = raw.rfind("}")
             if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
                 raw = raw[first_brace : last_brace + 1]
 
@@ -321,7 +325,8 @@ class Verifier:
             return VerificationEvidence(
                 gate_name="ast_parse",
                 status=VerificationStatus.PASSED,
-                message=f"AST parse successful ({node_count} nodes)" + (f", {len(issues)} issues" if issues else ""),
+                message=f"AST parse successful ({node_count} nodes)"
+                + (f", {len(issues)} issues" if issues else ""),
                 details={"node_count": node_count, "issues": issues},
             )
         except SyntaxError as e:
@@ -344,6 +349,7 @@ class Verifier:
                         for arg in node.args:
                             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                                 from pathlib import Path
+
                                 p = Path(cwd) / arg.value
                                 if not p.exists():
                                     missing.append(arg.value)

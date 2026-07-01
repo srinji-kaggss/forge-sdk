@@ -62,7 +62,9 @@ async def patch_line(file_path: str, line_number: int, new_content: str) -> Tool
     old = path.read_text()
     lines = old.splitlines()
     if line_number < 1 or line_number > len(lines):
-        return ToolResult(success=False, output=f"Error: line {line_number} out of range (1-{len(lines)})")
+        return ToolResult(
+            success=False, output=f"Error: line {line_number} out of range (1-{len(lines)})"
+        )
 
     lines[line_number - 1] = new_content
     new = "\n".join(lines) if not old.endswith("\n") else "\n".join(lines) + "\n"
@@ -97,18 +99,25 @@ async def patch_symbol(file_path: str, symbol_name: str, new_body: str) -> ToolR
 
     target_node = None
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == symbol_name:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == symbol_name
+        ):
             target_node = node
             break
 
     if target_node is None:
-        return ToolResult(success=False, output=f"Error: symbol '{symbol_name}' not found in {file_path}")
+        return ToolResult(
+            success=False, output=f"Error: symbol '{symbol_name}' not found in {file_path}"
+        )
 
     start = target_node.lineno - 1
     end = target_node.end_lineno or len(lines)
 
     indent = len(lines[start]) - len(lines[start].lstrip())
-    indented_new = "\n".join(" " * indent + line if line.strip() else line for line in new_body.splitlines())
+    indented_new = "\n".join(
+        " " * indent + line if line.strip() else line for line in new_body.splitlines()
+    )
 
     new_lines = lines[:start] + indented_new.splitlines() + lines[end:]
     new = "\n".join(new_lines)
@@ -139,7 +148,9 @@ async def insert_at(file_path: str, after_line: int, content: str) -> ToolResult
     lines = old.splitlines()
 
     if after_line < 0 or after_line > len(lines):
-        return ToolResult(success=False, output=f"Error: after_line {after_line} out of range (0-{len(lines)})")
+        return ToolResult(
+            success=False, output=f"Error: after_line {after_line} out of range (0-{len(lines)})"
+        )
 
     new_lines = lines[:after_line] + content.splitlines() + lines[after_line:]
     new = "\n".join(new_lines)
@@ -157,7 +168,10 @@ async def insert_at(file_path: str, after_line: int, content: str) -> ToolResult
 
     path.write_text(new)
     diff = _make_diff(old, new, file_path)
-    return ToolResult(success=True, output=f"Inserted {len(content.splitlines())} lines after line {after_line} in {file_path}\n{diff}")
+    return ToolResult(
+        success=True,
+        output=f"Inserted {len(content.splitlines())} lines after line {after_line} in {file_path}\n{diff}",
+    )
 
 
 async def rename_symbol(file_path: str, old_name: str, new_name: str) -> ToolResult:
@@ -175,7 +189,10 @@ async def rename_symbol(file_path: str, old_name: str, new_name: str) -> ToolRes
 
     found = False
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == old_name:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == old_name
+        ):
             node.name = new_name
             found = True
 
@@ -185,7 +202,9 @@ async def rename_symbol(file_path: str, old_name: str, new_name: str) -> ToolRes
     new = ast.unparse(tree)
     path.write_text(new)
     diff = _make_diff(old, new, file_path)
-    return ToolResult(success=True, output=f"Renamed '{old_name}' → '{new_name}' in {file_path}\n{diff}")
+    return ToolResult(
+        success=True, output=f"Renamed '{old_name}' → '{new_name}' in {file_path}\n{diff}"
+    )
 
 
 async def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> ToolResult:
@@ -202,10 +221,14 @@ async def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> ToolResult:
         etype = edit.get("type", "line")
         if etype == "line":
             r = await patch_line(file_path, edit["line_number"], edit["new_content"])
-            results.append(f"line {edit['line_number']}: {'OK' if r.success else (r.error or r.output)}")
+            results.append(
+                f"line {edit['line_number']}: {'OK' if r.success else (r.error or r.output)}"
+            )
         elif etype == "symbol":
             r = await patch_symbol(file_path, edit["symbol_name"], edit["new_body"])
-            results.append(f"symbol {edit['symbol_name']}: {'OK' if r.success else (r.error or r.output)}")
+            results.append(
+                f"symbol {edit['symbol_name']}: {'OK' if r.success else (r.error or r.output)}"
+            )
         else:
             r = ToolResult(success=False, output="", error=f"unknown edit type: {etype!r}")
             results.append(f"{etype}: {r.error}")
@@ -228,9 +251,15 @@ async def multi_edit(file_path: str, edits: list[dict[str, Any]]) -> ToolResult:
             success=False,
             output=f"Applied {len(results) - 1}/{len(edits)} edits to {file_path} before a sub-edit was refused:\n{summary}\n{diff}",
             error=results[-1],
-            metadata={"path": file_path, "edits_applied": len(results) - 1, "edits_requested": len(edits)},
+            metadata={
+                "path": file_path,
+                "edits_applied": len(results) - 1,
+                "edits_requested": len(edits),
+            },
         )
-    return ToolResult(success=True, output=f"Applied {len(edits)} edits to {file_path}\n{summary}\n{diff}")
+    return ToolResult(
+        success=True, output=f"Applied {len(edits)} edits to {file_path}\n{summary}\n{diff}"
+    )
 
 
 PATCH_LINE_TOOL = ToolSpec(
@@ -249,8 +278,8 @@ PATCH_LINE_TOOL = ToolSpec(
         "required": ["file_path", "line_number", "new_content"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-EDIT-001",
-        handler=patch_line,
+    stable_id="TOOL-EDIT-001",
+    handler=patch_line,
 )
 
 PATCH_SYMBOL_TOOL = ToolSpec(
@@ -271,8 +300,8 @@ PATCH_SYMBOL_TOOL = ToolSpec(
         "required": ["file_path", "symbol_name", "new_body"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-EDIT-002",
-        handler=patch_symbol,
+    stable_id="TOOL-EDIT-002",
+    handler=patch_symbol,
 )
 
 INSERT_AT_TOOL = ToolSpec(
@@ -285,14 +314,17 @@ INSERT_AT_TOOL = ToolSpec(
         "type": "object",
         "properties": {
             "file_path": {"type": "string", "description": "Path to the file"},
-            "after_line": {"type": "integer", "description": "Insert after this line (0 = top of file)"},
+            "after_line": {
+                "type": "integer",
+                "description": "Insert after this line (0 = top of file)",
+            },
             "content": {"type": "string", "description": "Content to insert"},
         },
         "required": ["file_path", "after_line", "content"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-EDIT-003",
-        handler=insert_at,
+    stable_id="TOOL-EDIT-003",
+    handler=insert_at,
 )
 
 RENAME_SYMBOL_TOOL = ToolSpec(
@@ -311,8 +343,8 @@ RENAME_SYMBOL_TOOL = ToolSpec(
         "required": ["file_path", "old_name", "new_name"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-EDIT-004",
-        handler=rename_symbol,
+    stable_id="TOOL-EDIT-004",
+    handler=rename_symbol,
 )
 
 MULTI_EDIT_TOOL = ToolSpec(
@@ -332,8 +364,14 @@ MULTI_EDIT_TOOL = ToolSpec(
         "required": ["file_path", "edits"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-EDIT-005",
-        handler=multi_edit,
+    stable_id="TOOL-EDIT-005",
+    handler=multi_edit,
 )
 
-EDIT_INTEL_TOOLS = [PATCH_LINE_TOOL, PATCH_SYMBOL_TOOL, INSERT_AT_TOOL, RENAME_SYMBOL_TOOL, MULTI_EDIT_TOOL]
+EDIT_INTEL_TOOLS = [
+    PATCH_LINE_TOOL,
+    PATCH_SYMBOL_TOOL,
+    INSERT_AT_TOOL,
+    RENAME_SYMBOL_TOOL,
+    MULTI_EDIT_TOOL,
+]

@@ -59,7 +59,12 @@ class OllamaProvider:
         return headers
 
     def _build_payload(
-        self, messages: list[dict], *, temperature: float, max_tokens: int | None, stop: list[str] | None
+        self,
+        messages: list[dict],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+        stop: list[str] | None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._model,
@@ -100,7 +105,9 @@ class OllamaProvider:
         max_tokens: int | None = None,
         stop: list[str] | None = None,
     ) -> ModelResponse:
-        payload = self._build_payload(messages, temperature=temperature, max_tokens=max_tokens, stop=stop)
+        payload = self._build_payload(
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+        )
         resp = self._client.post(
             f"{self._base_url}/v1/chat/completions",
             headers=self._headers(),
@@ -117,7 +124,9 @@ class OllamaProvider:
         max_tokens: int | None = None,
         stop: list[str] | None = None,
     ) -> list[ModelChunk]:
-        payload = self._build_payload(messages, temperature=temperature, max_tokens=max_tokens, stop=stop)
+        payload = self._build_payload(
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+        )
         payload["stream"] = True
         resp = self._client.post(
             f"{self._base_url}/v1/chat/completions",

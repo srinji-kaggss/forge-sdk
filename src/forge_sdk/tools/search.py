@@ -19,8 +19,7 @@ async def _grep(pattern: str, path: str = ".", include: str = "") -> ToolResult:
         # L1: Path safety check
         violation = _check_path_safety(path, ".", check_writes=False)
         if violation:
-            return ToolResult(success=False, output="", error=violation,
-                              metadata={"blocked": True})
+            return ToolResult(success=False, output="", error=violation, metadata={"blocked": True})
 
         cmd = ["rg", "--no-heading", "--line-number", "--color=never"]
         if include:
@@ -66,8 +65,7 @@ async def _glob(pattern: str, path: str = ".") -> ToolResult:
         # L1: Path safety check
         violation = _check_path_safety(path, ".", check_writes=False)
         if violation:
-            return ToolResult(success=False, output="", error=violation,
-                              metadata={"blocked": True})
+            return ToolResult(success=False, output="", error=violation, metadata={"blocked": True})
 
         p = Path(path).expanduser().resolve()
         if not p.is_dir():

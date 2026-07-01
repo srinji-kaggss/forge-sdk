@@ -41,8 +41,9 @@ async def _read_file(path: str) -> ToolResult:
         # L1+L5: Security check — read path safety
         violation = _check_path_safety(path, ".", check_writes=False)
         if violation:
-            return ToolResult(success=False, output="", error=violation,
-                              metadata={"path": path, "blocked": True})
+            return ToolResult(
+                success=False, output="", error=violation, metadata={"path": path, "blocked": True}
+            )
 
         p = Path(path).expanduser().resolve()
         if not p.exists():
@@ -50,7 +51,9 @@ async def _read_file(path: str) -> ToolResult:
                 success=False,
                 output="",
                 error=f"File not found: {p}",
-                metadata={"suggestion": f"Check if the file exists. Try list_dir on the parent directory: {p.parent}"},
+                metadata={
+                    "suggestion": f"Check if the file exists. Try list_dir on the parent directory: {p.parent}"
+                },
             )
         if not p.is_file():
             return ToolResult(
@@ -65,7 +68,9 @@ async def _read_file(path: str) -> ToolResult:
                 success=False,
                 output="",
                 error=f"File too large ({file_size} bytes, max {MAX_READ_BYTES})",
-                metadata={"suggestion": "Read a specific section or use grep to find relevant parts"},
+                metadata={
+                    "suggestion": "Read a specific section or use grep to find relevant parts"
+                },
             )
         content = p.read_text(encoding="utf-8", errors="replace")
         return ToolResult(
@@ -84,8 +89,9 @@ async def _write_file(path: str, content: str, force: bool = False) -> ToolResul
         # L1+L5: Security check — write path safety
         violation = _check_path_safety(path, ".", check_writes=True)
         if violation:
-            return ToolResult(success=False, output="", error=violation,
-                              metadata={"path": path, "blocked": True})
+            return ToolResult(
+                success=False, output="", error=violation, metadata={"path": path, "blocked": True}
+            )
 
         p = Path(path).expanduser().resolve()
 
@@ -120,8 +126,13 @@ async def _write_file(path: str, content: str, force: bool = False) -> ToolResul
                         f"tool for a scoped edit, or pass force=true to write "
                         f"this content anyway."
                     ),
-                    metadata={"path": str(p), "blocked": True, "reason": "shrink_guard",
-                              "old_bytes": old_len, "new_bytes": new_len},
+                    metadata={
+                        "path": str(p),
+                        "blocked": True,
+                        "reason": "shrink_guard",
+                        "old_bytes": old_len,
+                        "new_bytes": new_len,
+                    },
                 )
 
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -166,7 +177,11 @@ async def _list_dir(path: str = ".") -> ToolResult:
                 formatted.append(f"  {e}  (inaccessible)")
         if len(entries) > 200:
             formatted.append(f"  ... and {len(entries) - 200} more entries")
-        output = f"Contents of {p} ({len(entries)} entries):\n" + "\n".join(formatted) if formatted else f"Empty directory: {p}"
+        output = (
+            f"Contents of {p} ({len(entries)} entries):\n" + "\n".join(formatted)
+            if formatted
+            else f"Empty directory: {p}"
+        )
         return ToolResult(
             success=True,
             output=output,
@@ -242,7 +257,10 @@ FILE_TOOLS = [
         output_schema={
             "type": "object",
             "properties": {
-                "result": {"type": "string", "description": "Confirmation message with byte/line count"},
+                "result": {
+                    "type": "string",
+                    "description": "Confirmation message with byte/line count",
+                },
             },
         },
         stable_id="TOOL-FILE-WRITE-001",

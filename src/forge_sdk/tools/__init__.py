@@ -17,12 +17,14 @@ def get_default_tools() -> list[ToolSpec]:
     from forge_sdk.tools.filesystem import FILE_TOOLS
     from forge_sdk.tools.search import SEARCH_TOOLS
     from forge_sdk.tools.shell import SHELL_TOOL
+
     return FILE_TOOLS + SEARCH_TOOLS + [SHELL_TOOL]
 
 
 def get_advanced_tools() -> list[ToolSpec]:
     """Return the advanced tool suite (code intel + edit intel + verify + knowledge + memory)."""
     from forge_sdk.tools.advanced import ADVANCED_TOOLS
+
     return ADVANCED_TOOLS
 
 
@@ -31,4 +33,11 @@ def get_all_tools() -> list[ToolSpec]:
     return get_default_tools() + get_advanced_tools()
 
 
-__all__ = ["ToolResult", "ToolSpec", "ToolRegistry", "get_default_tools", "get_advanced_tools", "get_all_tools"]
+__all__ = [
+    "ToolResult",
+    "ToolSpec",
+    "ToolRegistry",
+    "get_default_tools",
+    "get_advanced_tools",
+    "get_all_tools",
+]

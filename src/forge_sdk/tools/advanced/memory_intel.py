@@ -39,17 +39,22 @@ async def recall(query: str, limit: int = 5) -> ToolResult:
         if overlap == 0:
             continue
         score = overlap / max(len(query_words), 1)
-        results.append({
-            "task": task,
-            "outcome": ep.get("outcome", "unknown"),
-            "score": round(score, 3),
-            "output": (ep.get("output") or "")[:200],
-        })
+        results.append(
+            {
+                "task": task,
+                "outcome": ep.get("outcome", "unknown"),
+                "score": round(score, 3),
+                "output": (ep.get("output") or "")[:200],
+            }
+        )
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return ToolResult(
         success=True,
-        output=json.dumps({"query": query, "episodes_searched": len(_episode_store), "results": results[:limit]}, indent=2),
+        output=json.dumps(
+            {"query": query, "episodes_searched": len(_episode_store), "results": results[:limit]},
+            indent=2,
+        ),
     )
 
 
@@ -59,7 +64,9 @@ async def compress_context(text: str, max_words: int = 100) -> ToolResult:
     sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
 
     if not sentences:
-        return ToolResult(success=True, output=json.dumps({"compressed": "", "method": "no_sentences"}, indent=2))
+        return ToolResult(
+            success=True, output=json.dumps({"compressed": "", "method": "no_sentences"}, indent=2)
+        )
 
     word_freq: dict[str, int] = {}
     for word in text.lower().split():
@@ -70,21 +77,26 @@ async def compress_context(text: str, max_words: int = 100) -> ToolResult:
     scored = []
     for i, sent in enumerate(sentences):
         words = sent.lower().split()
-        score = sum(word_freq.get(re.sub(r"[^a-z0-9]", "", w), 0) for w in words) / max(len(words), 1)
+        score = sum(word_freq.get(re.sub(r"[^a-z0-9]", "", w), 0) for w in words) / max(
+            len(words), 1
+        )
         scored.append((score, i, sent))
 
     scored.sort(reverse=True)
-    top = sorted(scored[:max_words // 15], key=lambda x: x[1])
+    top = sorted(scored[: max_words // 15], key=lambda x: x[1])
     compressed = ". ".join(s[2] for s in top)
 
     return ToolResult(
         success=True,
-        output=json.dumps({
-            "original_words": len(text.split()),
-            "compressed_words": len(compressed.split()),
-            "compression_ratio": round(len(compressed.split()) / max(len(text.split()), 1), 2),
-            "compressed": compressed,
-        }, indent=2),
+        output=json.dumps(
+            {
+                "original_words": len(text.split()),
+                "compressed_words": len(compressed.split()),
+                "compression_ratio": round(len(compressed.split()) / max(len(text.split()), 1), 2),
+                "compressed": compressed,
+            },
+            indent=2,
+        ),
     )
 
 
@@ -120,14 +132,17 @@ async def relevance_score(file_path: str, task: str) -> ToolResult:
 
     return ToolResult(
         success=True,
-        output=json.dumps({
-            "file": file_path,
-            "task": task,
-            "relevance_score": round(total_score, 3),
-            "word_overlap": round(word_overlap, 3),
-            "symbol_matches": symbol_matches,
-            "matching_lines": matching_lines,
-        }, indent=2),
+        output=json.dumps(
+            {
+                "file": file_path,
+                "task": task,
+                "relevance_score": round(total_score, 3),
+                "word_overlap": round(word_overlap, 3),
+                "symbol_matches": symbol_matches,
+                "matching_lines": matching_lines,
+            },
+            indent=2,
+        ),
     )
 
 
@@ -147,8 +162,8 @@ RECALL_TOOL = ToolSpec(
         "required": ["query"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-MEM-001",
-        handler=recall,
+    stable_id="TOOL-MEM-001",
+    handler=recall,
 )
 
 COMPRESS_CONTEXT_TOOL = ToolSpec(
@@ -166,8 +181,8 @@ COMPRESS_CONTEXT_TOOL = ToolSpec(
         "required": ["text"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-MEM-002",
-        handler=compress_context,
+    stable_id="TOOL-MEM-002",
+    handler=compress_context,
 )
 
 RELEVANCE_SCORE_TOOL = ToolSpec(
@@ -186,8 +201,8 @@ RELEVANCE_SCORE_TOOL = ToolSpec(
         "required": ["file_path", "task"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-MEM-003",
-        handler=relevance_score,
+    stable_id="TOOL-MEM-003",
+    handler=relevance_score,
 )
 
 MEMORY_INTEL_TOOLS = [RECALL_TOOL, COMPRESS_CONTEXT_TOOL, RELEVANCE_SCORE_TOOL]

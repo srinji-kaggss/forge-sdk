@@ -32,7 +32,7 @@ class DaemonEventSink:
         daemon_script: str = "lgwks_daemon_event",
         queue_name: str = "forge",
     ) -> None:
-        if not re.match(r'^[a-zA-Z0-9_-]+$', queue_name):
+        if not re.match(r"^[a-zA-Z0-9_-]+$", queue_name):
             raise ValueError(f"Invalid queue_name: {queue_name!r}. Must match [a-zA-Z0-9_-]+")
         self._script = daemon_script
         self._queue = queue_name
@@ -72,7 +72,11 @@ class DaemonEventSink:
                 self._buffer.clear()
                 self._clear_wal()
             else:
-                logger.warning("DaemonEventSink flush failed (rc=%d): %s", result.returncode, result.stderr[:200])
+                logger.warning(
+                    "DaemonEventSink flush failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr[:200],
+                )
                 # Keep buffer for retry — don't lose events
         except Exception as e:
             logger.warning("DaemonEventSink flush exception: %s", e)

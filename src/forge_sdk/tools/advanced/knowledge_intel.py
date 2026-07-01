@@ -40,7 +40,8 @@ async def web_search(query: str, limit: int = 5) -> ToolResult:
         for match in re.finditer(
             r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?'
             r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-            html, re.DOTALL
+            html,
+            re.DOTALL,
         ):
             link = match.group(1)
             title = re.sub(r"<[^>]+>", "", match.group(2)).strip()
@@ -56,7 +57,9 @@ async def web_search(query: str, limit: int = 5) -> ToolResult:
         if not results:
             return ToolResult(success=False, output=f"No results found for: {query}")
 
-        return ToolResult(success=True, output=json.dumps({"query": query, "results": results}, indent=2))
+        return ToolResult(
+            success=True, output=json.dumps({"query": query, "results": results}, indent=2)
+        )
     except Exception as exc:
         return ToolResult(success=False, output=f"Search failed: {exc}")
 
@@ -79,11 +82,14 @@ async def web_fetch(url: str, max_chars: int = 5000) -> ToolResult:
 
         return ToolResult(
             success=len(text) > 0,
-            output=json.dumps({
-                "url": url,
-                "chars": len(text),
-                "content": text[:max_chars],
-            }, indent=2),
+            output=json.dumps(
+                {
+                    "url": url,
+                    "chars": len(text),
+                    "content": text[:max_chars],
+                },
+                indent=2,
+            ),
         )
     except Exception as exc:
         return ToolResult(success=False, output=f"Fetch failed: {exc}")
@@ -99,7 +105,10 @@ async def extract_document(file_path: str, max_chars: int = 10000) -> ToolResult
     text = ""
 
     if suffix == ".pdf":
-        for extractor in ["pdftotext", "python3 -c 'import fitz; print(fitz.open(\"{}\")[0].get_text())'"]:
+        for extractor in [
+            "pdftotext",
+            "python3 -c 'import fitz; print(fitz.open(\"{}\")[0].get_text())'",
+        ]:
             try:
                 proc = await asyncio.create_subprocess_shell(
                     f'{extractor} "{file_path}"',
@@ -135,12 +144,15 @@ async def extract_document(file_path: str, max_chars: int = 10000) -> ToolResult
 
     return ToolResult(
         success=True,
-        output=json.dumps({
-            "file": file_path,
-            "type": suffix,
-            "chars": len(text),
-            "content": text[:max_chars],
-        }, indent=2),
+        output=json.dumps(
+            {
+                "file": file_path,
+                "type": suffix,
+                "chars": len(text),
+                "content": text[:max_chars],
+            },
+            indent=2,
+        ),
     )
 
 
@@ -148,17 +160,20 @@ async def semantic_search(query: str, path: str = ".", limit: int = 10) -> ToolR
     """Search files by semantic similarity (keyword overlap scoring, no API needed)."""
     # L1: Path safety check
     from forge_sdk.security import _check_path_safety
+
     violation = _check_path_safety(path, ".", check_writes=False)
     if violation:
-        return ToolResult(success=False, output="", error=violation,
-                          metadata={"blocked": True})
+        return ToolResult(success=False, output="", error=violation, metadata={"blocked": True})
 
     root = Path(path)
     query_words = set(query.lower().split())
     results: list[dict[str, Any]] = []
 
     for pyf in root.rglob("*"):
-        if any(skip in str(pyf) for skip in [".venv", "__pycache__", ".git", "site-packages", "node_modules"]):
+        if any(
+            skip in str(pyf)
+            for skip in [".venv", "__pycache__", ".git", "site-packages", "node_modules"]
+        ):
             continue
         if not pyf.is_file():
             continue
@@ -177,16 +192,20 @@ async def semantic_search(query: str, path: str = ".", limit: int = 10) -> ToolR
 
         score = overlap / len(query_words) if query_words else 0
         if score > 0.1:
-            results.append({
-                "file": str(pyf.relative_to(root)),
-                "score": round(score, 3),
-                "matching_words": list(query_words & content_words)[:10],
-            })
+            results.append(
+                {
+                    "file": str(pyf.relative_to(root)),
+                    "score": round(score, 3),
+                    "matching_words": list(query_words & content_words)[:10],
+                }
+            )
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return ToolResult(
         success=True,
-        output=json.dumps({"query": query, "matches": len(results), "results": results[:limit]}, indent=2),
+        output=json.dumps(
+            {"query": query, "matches": len(results), "results": results[:limit]}, indent=2
+        ),
     )
 
 
@@ -206,8 +225,8 @@ WEB_SEARCH_TOOL = ToolSpec(
         "required": ["query"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-KNOW-001",
-        handler=web_search,
+    stable_id="TOOL-KNOW-001",
+    handler=web_search,
 )
 
 WEB_FETCH_TOOL = ToolSpec(
@@ -226,8 +245,8 @@ WEB_FETCH_TOOL = ToolSpec(
         "required": ["url"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-KNOW-002",
-        handler=web_fetch,
+    stable_id="TOOL-KNOW-002",
+    handler=web_fetch,
 )
 
 EXTRACT_DOCUMENT_TOOL = ToolSpec(
@@ -246,8 +265,8 @@ EXTRACT_DOCUMENT_TOOL = ToolSpec(
         "required": ["file_path"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-KNOW-003",
-        handler=extract_document,
+    stable_id="TOOL-KNOW-003",
+    handler=extract_document,
 )
 
 SEMANTIC_SEARCH_TOOL = ToolSpec(
@@ -267,8 +286,13 @@ SEMANTIC_SEARCH_TOOL = ToolSpec(
         "required": ["query"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-KNOW-004",
-        handler=semantic_search,
+    stable_id="TOOL-KNOW-004",
+    handler=semantic_search,
 )
 
-KNOWLEDGE_INTEL_TOOLS = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL, EXTRACT_DOCUMENT_TOOL, SEMANTIC_SEARCH_TOOL]
+KNOWLEDGE_INTEL_TOOLS = [
+    WEB_SEARCH_TOOL,
+    WEB_FETCH_TOOL,
+    EXTRACT_DOCUMENT_TOOL,
+    SEMANTIC_SEARCH_TOOL,
+]

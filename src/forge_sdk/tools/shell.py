@@ -20,18 +20,28 @@ async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
     violation = _check_command_safety(command)
     if violation:
         import logging
+
         logging.getLogger("forge.tools.shell").warning("BLOCKED: %s", violation)
-        return ToolResult(success=False, output="", error=violation,
-                          metadata={"command": command, "blocked": True})
+        return ToolResult(
+            success=False,
+            output="",
+            error=violation,
+            metadata={"command": command, "blocked": True},
+        )
 
     # L1: Check cwd is not sensitive
     cwd_violation = _check_path_safety(cwd, ".", check_writes=False)
     if cwd_violation:
-        return ToolResult(success=False, output="", error=cwd_violation,
-                          metadata={"command": command, "blocked": True})
+        return ToolResult(
+            success=False,
+            output="",
+            error=cwd_violation,
+            metadata={"command": command, "blocked": True},
+        )
 
     # Audit log
     import logging
+
     logging.getLogger("forge.tools.shell").warning("SHELL: %s (cwd=%s)", command, cwd)
 
     # Parse with shlex — NEVER fall back to shell=True
@@ -42,7 +52,7 @@ async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
             success=False,
             output="",
             error=f"Command parse failed (unbalanced quotes): {exc}. "
-                  f"Fix the quoting. shell=True fallback is disabled for security.",
+            f"Fix the quoting. shell=True fallback is disabled for security.",
             metadata={"command": command, "blocked": True},
         )
 
@@ -93,7 +103,7 @@ async def _shell(command: str, cwd: str = ".", timeout: int = 60) -> ToolResult:
             error=f"Command timed out after {timeout}s",
             metadata={
                 "suggestion": "Increase timeout, use a simpler command, "
-                              "or break the task into smaller steps",
+                "or break the task into smaller steps",
                 "timeout": timeout,
             },
         )

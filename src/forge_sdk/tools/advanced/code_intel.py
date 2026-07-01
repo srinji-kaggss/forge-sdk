@@ -37,38 +37,43 @@ def _parse_python_file(path: str) -> dict[str, Any]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = [a.arg for a in node.args.args]
             ret = ast.unparse(node.returns) if node.returns else None
-            entities.append({
-                "type": "function",
-                "name": node.name,
-                "line": node.lineno,
-                "end_line": node.end_lineno or node.lineno,
-                "args": args,
-                "returns": ret,
-                "docstring": ast.get_docstring(node),
-                "decorators": [ast.unparse(d) for d in node.decorator_list],
-            })
+            entities.append(
+                {
+                    "type": "function",
+                    "name": node.name,
+                    "line": node.lineno,
+                    "end_line": node.end_lineno or node.lineno,
+                    "args": args,
+                    "returns": ret,
+                    "docstring": ast.get_docstring(node),
+                    "decorators": [ast.unparse(d) for d in node.decorator_list],
+                }
+            )
         elif isinstance(node, ast.ClassDef):
             bases = [ast.unparse(b) for b in node.bases]
             methods = [
-                n.name for n in node.body
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             ]
-            entities.append({
-                "type": "class",
-                "name": node.name,
-                "line": node.lineno,
-                "end_line": node.end_lineno or node.lineno,
-                "bases": bases,
-                "methods": methods,
-                "docstring": ast.get_docstring(node),
-            })
+            entities.append(
+                {
+                    "type": "class",
+                    "name": node.name,
+                    "line": node.lineno,
+                    "end_line": node.end_lineno or node.lineno,
+                    "bases": bases,
+                    "methods": methods,
+                    "docstring": ast.get_docstring(node),
+                }
+            )
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 imports.append({"module": alias.name, "alias": alias.asname, "line": node.lineno})
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
             for alias in node.names:
-                imports.append({"module": mod, "name": alias.name, "alias": alias.asname, "line": node.lineno})
+                imports.append(
+                    {"module": mod, "name": alias.name, "alias": alias.asname, "line": node.lineno}
+                )
         elif isinstance(node, ast.Call):
             try:
                 func_name = ast.unparse(node.func)
@@ -90,7 +95,10 @@ def _build_codebase_graph(root: str, max_files: int = 200) -> dict[str, Any]:
     root_path = Path(root)
     py_files = []
     for p in root_path.rglob("*.py"):
-        if any(skip in str(p) for skip in [".venv", "__pycache__", ".git", "node_modules", "site-packages"]):
+        if any(
+            skip in str(p)
+            for skip in [".venv", "__pycache__", ".git", "node_modules", "site-packages"]
+        ):
             continue
         py_files.append(p)
         if len(py_files) >= max_files:
@@ -106,28 +114,34 @@ def _build_codebase_graph(root: str, max_files: int = 200) -> dict[str, Any]:
         file_index[rel] = parsed
 
         for ent in parsed.get("entities", []):
-            nodes.append({
-                "id": f"{rel}::{ent['name']}",
-                "type": ent["type"],
-                "name": ent["name"],
-                "file": rel,
-                "line": ent["line"],
-            })
+            nodes.append(
+                {
+                    "id": f"{rel}::{ent['name']}",
+                    "type": ent["type"],
+                    "name": ent["name"],
+                    "file": rel,
+                    "line": ent["line"],
+                }
+            )
 
         for imp in parsed.get("imports", []):
-            edges.append({
-                "source": rel,
-                "target": imp["module"],
-                "type": "imports",
-            })
+            edges.append(
+                {
+                    "source": rel,
+                    "target": imp["module"],
+                    "type": "imports",
+                }
+            )
 
         for call in parsed.get("calls", []):
-            edges.append({
-                "source": rel,
-                "target": call["function"],
-                "type": "calls",
-                "line": call["line"],
-            })
+            edges.append(
+                {
+                    "source": rel,
+                    "target": call["function"],
+                    "type": "calls",
+                    "line": call["line"],
+                }
+            )
 
     return {
         "root": root,
@@ -152,13 +166,15 @@ async def symbol_search(pattern: str, path: str = ".", symbol_type: str = "") ->
             if symbol_type and ent["type"] != symbol_type:
                 continue
             if re.search(pattern, ent["name"], re.IGNORECASE):
-                results.append({
-                    "name": ent["name"],
-                    "type": ent["type"],
-                    "file": rel,
-                    "line": ent["line"],
-                    "docstring": (ent.get("docstring") or "")[:120],
-                })
+                results.append(
+                    {
+                        "name": ent["name"],
+                        "type": ent["type"],
+                        "file": rel,
+                        "line": ent["line"],
+                        "docstring": (ent.get("docstring") or "")[:120],
+                    }
+                )
 
     return ToolResult(
         success=True,
@@ -174,18 +190,32 @@ async def call_graph(symbol: str, path: str = ".", direction: str = "callers") -
     if direction == "callers":
         for edge in graph["edges"]:
             if edge["type"] == "calls" and symbol in edge["target"]:
-                results.append({"file": edge["source"], "line": edge.get("line", 0), "calls": edge["target"]})
+                results.append(
+                    {"file": edge["source"], "line": edge.get("line", 0), "calls": edge["target"]}
+                )
     else:
         for node in graph["nodes"]:
             if node["name"] == symbol:
                 file_data = graph["file_index"].get(node["file"], {})
                 for call in file_data.get("calls", []):
-                    if call["line"] >= node["line"] and call["line"] <= node.get("end_line", call["line"]):
-                        results.append({"file": node["file"], "line": call["line"], "calls": call["function"]})
+                    if call["line"] >= node["line"] and call["line"] <= node.get(
+                        "end_line", call["line"]
+                    ):
+                        results.append(
+                            {"file": node["file"], "line": call["line"], "calls": call["function"]}
+                        )
 
     return ToolResult(
         success=True,
-        output=json.dumps({"symbol": symbol, "direction": direction, "matches": len(results), "results": results[:30]}, indent=2),
+        output=json.dumps(
+            {
+                "symbol": symbol,
+                "direction": direction,
+                "matches": len(results),
+                "results": results[:30],
+            },
+            indent=2,
+        ),
     )
 
 
@@ -200,23 +230,35 @@ async def impact_analysis(file_path: str, path: str = ".") -> ToolResult:
     for edge in graph["edges"]:
         if edge["type"] == "imports":
             mod = edge["target"].replace(".", "/")
-            if mod in rel or rel.replace("/", ".").replace(".py", "") in edge["target"] and edge["source"] not in importers:
+            if (
+                mod in rel
+                or rel.replace("/", ".").replace(".py", "") in edge["target"]
+                and edge["source"] not in importers
+            ):
                 importers.append(edge["source"])
 
     for node in graph["nodes"]:
         if node["file"] == rel:
             for edge in graph["edges"]:
-                if edge["type"] == "calls" and node["name"] in edge["target"] and edge["source"] != rel and edge["source"] not in dependents:
+                if (
+                    edge["type"] == "calls"
+                    and node["name"] in edge["target"]
+                    and edge["source"] != rel
+                    and edge["source"] not in dependents
+                ):
                     dependents.append(edge["source"])
 
     return ToolResult(
         success=True,
-        output=json.dumps({
-            "file": rel,
-            "importers": importers[:20],
-            "dependents": dependents[:20],
-            "total_impact": len(importers) + len(dependents),
-        }, indent=2),
+        output=json.dumps(
+            {
+                "file": rel,
+                "importers": importers[:20],
+                "dependents": dependents[:20],
+                "total_impact": len(importers) + len(dependents),
+            },
+            indent=2,
+        ),
     )
 
 
@@ -241,14 +283,20 @@ SYMBOL_SEARCH_TOOL = ToolSpec(
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Regex pattern to match symbol names"},
-            "path": {"type": "string", "description": "Root directory to search (default: current dir)"},
-            "symbol_type": {"type": "string", "description": "Filter: 'function', 'class', or empty for both"},
+            "path": {
+                "type": "string",
+                "description": "Root directory to search (default: current dir)",
+            },
+            "symbol_type": {
+                "type": "string",
+                "description": "Filter: 'function', 'class', or empty for both",
+            },
         },
         "required": ["pattern"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-CODE-001",
-        handler=symbol_search,
+    stable_id="TOOL-CODE-001",
+    handler=symbol_search,
 )
 
 CALL_GRAPH_TOOL = ToolSpec(
@@ -263,13 +311,16 @@ CALL_GRAPH_TOOL = ToolSpec(
         "properties": {
             "symbol": {"type": "string", "description": "Function or class name to analyze"},
             "path": {"type": "string", "description": "Root directory (default: '.')"},
-            "direction": {"type": "string", "description": "'callers' (who calls X) or 'callees' (what X calls)"},
+            "direction": {
+                "type": "string",
+                "description": "'callers' (who calls X) or 'callees' (what X calls)",
+            },
         },
         "required": ["symbol"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-CODE-002",
-        handler=call_graph,
+    stable_id="TOOL-CODE-002",
+    handler=call_graph,
 )
 
 IMPACT_ANALYSIS_TOOL = ToolSpec(
@@ -287,8 +338,8 @@ IMPACT_ANALYSIS_TOOL = ToolSpec(
         "required": ["file_path"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-CODE-003",
-        handler=impact_analysis,
+    stable_id="TOOL-CODE-003",
+    handler=impact_analysis,
 )
 
 CODE_STRUCTURE_TOOL = ToolSpec(
@@ -307,8 +358,8 @@ CODE_STRUCTURE_TOOL = ToolSpec(
         "required": ["file_path"],
     },
     output_schema={"type": "string", "description": "JSON result"},
-        stable_id="TOOL-CODE-004",
-        handler=code_structure,
+    stable_id="TOOL-CODE-004",
+    handler=code_structure,
 )
 
 CODE_INTEL_TOOLS = [SYMBOL_SEARCH_TOOL, CALL_GRAPH_TOOL, IMPACT_ANALYSIS_TOOL, CODE_STRUCTURE_TOOL]

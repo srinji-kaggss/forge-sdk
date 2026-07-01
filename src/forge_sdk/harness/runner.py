@@ -20,8 +20,7 @@ from forge_sdk.harness.profiles import AgentProfile
 class Agent(Protocol):
     """Duck-typed protocol for any agent that can run tasks."""
 
-    def run(self, context: AgentContext) -> AgentResult:
-        ...
+    def run(self, context: AgentContext) -> AgentResult: ...
 
 
 @dataclass
@@ -297,12 +296,8 @@ class HarnessRunner:
         return {
             "total_runs": total,
             "success_rate": successes / total if total > 0 else 0.0,
-            "avg_duration_ms": (
-                sum(r.duration_ms for r in self._runs) / total if total > 0 else 0
-            ),
-            "avg_tokens": (
-                sum(r.tokens_used for r in self._runs) / total if total > 0 else 0
-            ),
+            "avg_duration_ms": (sum(r.duration_ms for r in self._runs) / total if total > 0 else 0),
+            "avg_tokens": (sum(r.tokens_used for r in self._runs) / total if total > 0 else 0),
             "generation": self._current_generation,
             "fragment_count": self._prompt.fragment_count,
             "knowledge_count": len(self._store.get_knowledge()),

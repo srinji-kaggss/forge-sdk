@@ -121,12 +121,18 @@ class _FinalGateState:
 
 
 _FAILURE_GATES: tuple[tuple[Callable[[_FinalGateState], bool], str], ...] = (
-    (lambda g: not g.verification_passed and g.build_gate_ran,
-     "Build/verify command failed on the files written — see verification evidence."),
-    (lambda g: not g.verification_passed and g.task_implies_edits,
-     "Verification failed for a task that requires code changes."),
-    (lambda g: not g.has_edits and g.task_implies_edits,
-     "Agent completed without modifying any files. Task implies code changes were expected."),
+    (
+        lambda g: not g.verification_passed and g.build_gate_ran,
+        "Build/verify command failed on the files written — see verification evidence.",
+    ),
+    (
+        lambda g: not g.verification_passed and g.task_implies_edits,
+        "Verification failed for a task that requires code changes.",
+    ),
+    (
+        lambda g: not g.has_edits and g.task_implies_edits,
+        "Agent completed without modifying any files. Task implies code changes were expected.",
+    ),
 )
 
 
@@ -166,8 +172,10 @@ log = logging.getLogger(__name__)
 # --- Parse strategies (OKF S3-safe: strategy registry, no if/elif chains) ---
 # Each strategy has: id (stable), applies(content) -> bool, execute(content) -> dict|None
 
+
 class ParseStrategy(ABC):
     """Base class for parse strategies. Stable ID + applies/execute contract."""
+
     id: str  # e.g. "PARSE-MARKDOWN-001"
 
     @abstractmethod
@@ -203,6 +211,7 @@ def _unwrap_nested_finish(parsed: dict[str, Any]) -> dict[str, Any] | None:
 
 class StripMarkdownStrategy(ParseStrategy):
     """PARSE-001: Strip markdown code fences before JSON extraction."""
+
     id = "PARSE-001"
 
     def applies(self, content: str) -> bool:
@@ -224,6 +233,7 @@ class StripMarkdownStrategy(ParseStrategy):
 
 class FullJsonStrategy(ParseStrategy):
     """PARSE-002: Parse the full JSON object (fast path). Handles nested finish→tool unwrapping."""
+
     id = "PARSE-002"
 
     def applies(self, content: str) -> bool:
@@ -250,6 +260,7 @@ class FullJsonStrategy(ParseStrategy):
 
 class FirstValidJsonStrategy(ParseStrategy):
     """PARSE-003: Find the FIRST valid JSON object (handles concatenated objects from small models)."""
+
     id = "PARSE-003"
 
     def applies(self, content: str) -> bool:
@@ -268,7 +279,7 @@ class FirstValidJsonStrategy(ParseStrategy):
                 elif content[i] == "}":
                     depth -= 1
                     if depth == 0:
-                        candidate = content[obj_start:i + 1]
+                        candidate = content[obj_start : i + 1]
                         try:
                             parsed = json.loads(candidate)
                             if isinstance(parsed, dict) and "action" in parsed:
@@ -295,6 +306,7 @@ _PARSE_STRATEGIES: list[ParseStrategy] = [
 @dataclass
 class ReasoningStep:
     """One step in the agent's reasoning trace — for interpretability."""
+
     step: int
     thought: str
     action: str
@@ -310,6 +322,7 @@ class ReasoningStep:
 @dataclass
 class ReasoningTrace:
     """Full reasoning trace for a run — deep interpretability."""
+
     task: str
     steps: list[ReasoningStep] = field(default_factory=list)
     total_duration_ms: float = 0.0
@@ -362,6 +375,7 @@ class ReasoningTrace:
 @dataclass
 class AgentMetrics:
     """Structured metrics for observability — emitted per run."""
+
     run_id: str = ""
     model: str = ""
     provider: str = ""
@@ -540,10 +554,7 @@ class ReactAgent:
         for t in self._tools.available():
             # CRITICAL FIX: Include parameter schemas so model knows what to pass
             params_str = json.dumps(t.input_schema, indent=2)
-            tool_descriptions.append(
-                f"- {t.name}: {t.description}\n"
-                f"  Parameters: {params_str}"
-            )
+            tool_descriptions.append(f"- {t.name}: {t.description}\n  Parameters: {params_str}")
         tools_block = "\n\n".join(tool_descriptions)
 
         sandbox_note = ""
@@ -606,7 +617,11 @@ class ReactAgent:
             # action="finish" reports false SUCCESS on a step where no tool
             # ever ran. Surface it so the caller can retry/correct instead.
             log.debug("PARSE: braces present but no strategy extracted a valid action")
-            return {"thought": content, "action": "__parse_failed__", "action_input": {"output": content}}
+            return {
+                "thought": content,
+                "action": "__parse_failed__",
+                "action_input": {"output": content},
+            }
         log.debug("PARSE: no strategy matched, fallback to finish")
         return {"thought": content, "action": "finish", "action_input": {"output": content}}
 
@@ -708,7 +723,7 @@ class ReactAgent:
         """
         targets, prev_end = [], 0
         for match in _FILE_PATH_TOKEN.finditer(task):
-            preceding = task[max(prev_end, match.start() - window):match.start()]
+            preceding = task[max(prev_end, match.start() - window) : match.start()]
             nearest_exclude, nearest_action = ReactAgent._nearest_context(preceding)
             if nearest_action > nearest_exclude:
                 targets.append(match.group(0))
@@ -720,7 +735,8 @@ class ReactAgent:
         """Named targets absent from all_edits — advisory, flags for human review."""
         edited = {e.lower() for e in all_edits} | {Path(e).name.lower() for e in all_edits}
         return [
-            t for t in cls._named_edit_targets(task)
+            t
+            for t in cls._named_edit_targets(task)
             if t.lower() not in edited and Path(t).name.lower() not in edited
         ]
 
@@ -770,7 +786,9 @@ class ReactAgent:
                     duration_ms=(time.monotonic() - start) * 1000,
                 )
             output = (stdout.decode(errors="replace") + stderr.decode(errors="replace"))[-2000:]
-            status = VerificationStatus.PASSED if proc.returncode == 0 else VerificationStatus.FAILED
+            status = (
+                VerificationStatus.PASSED if proc.returncode == 0 else VerificationStatus.FAILED
+            )
             return VerificationEvidence(
                 gate_name="build_verify",
                 status=status,
@@ -800,17 +818,31 @@ class ReactAgent:
 
         # Tools that touch the filesystem — ALL must be sandbox-checked
         _file_tools = {
-            "write_file", "create_file", "read_file", "list_dir",
-            "patch_line", "patch_symbol", "insert_at", "rename_symbol",
-            "multi_edit", "code_structure",
+            "write_file",
+            "create_file",
+            "read_file",
+            "list_dir",
+            "patch_line",
+            "patch_symbol",
+            "insert_at",
+            "rename_symbol",
+            "multi_edit",
+            "code_structure",
         }
 
         if action in _file_tools:
             path = action_input.get("path", "") or action_input.get("file_path", "")
             if path:
                 from forge_sdk.security import _check_path_safety
-                check_writes = action in {"write_file", "create_file", "patch_line",
-                                          "patch_symbol", "insert_at", "multi_edit"}
+
+                check_writes = action in {
+                    "write_file",
+                    "create_file",
+                    "patch_line",
+                    "patch_symbol",
+                    "insert_at",
+                    "multi_edit",
+                }
                 violation = _check_path_safety(
                     path, self._sandbox_dir, self._sandbox_dir, check_writes
                 )
@@ -821,15 +853,14 @@ class ReactAgent:
         if action == "shell":
             cwd = action_input.get("cwd", ".")
             from forge_sdk.security import _check_path_safety
+
             violation = _check_path_safety(cwd, self._sandbox_dir, self._sandbox_dir)
             if violation:
                 return violation
 
         return None
 
-    async def _call_model_with_retry(
-        self, messages: list[dict], temperature: float = 0.0
-    ) -> Any:
+    async def _call_model_with_retry(self, messages: list[dict], temperature: float = 0.0) -> Any:
         """Call model with exponential backoff retry."""
         last_error = None
         for attempt in range(self._max_retries):
@@ -839,12 +870,14 @@ class ReactAgent:
                 last_error = e
                 error_type = type(e).__name__
                 if "rate" in error_type.lower() or "429" in str(e):
-                    wait = (2 ** attempt) * 1.0
+                    wait = (2**attempt) * 1.0
                     log.warning("Rate limited, retrying in %.1fs (attempt %d)", wait, attempt + 1)
                     await asyncio.sleep(wait)
                 elif "timeout" in error_type.lower() or "connection" in error_type.lower():
-                    wait = (2 ** attempt) * 0.5
-                    log.warning("Connection error, retrying in %.1fs (attempt %d)", wait, attempt + 1)
+                    wait = (2**attempt) * 0.5
+                    log.warning(
+                        "Connection error, retrying in %.1fs (attempt %d)", wait, attempt + 1
+                    )
                     await asyncio.sleep(wait)
                 else:
                     raise
@@ -864,7 +897,9 @@ class ReactAgent:
             return None
         if not self._semantic_check.applies():
             return None
-        solution_summary = f"Modified {len(all_edits)} file(s): {', '.join(all_edits)}. Output: {output[:500]}"
+        solution_summary = (
+            f"Modified {len(all_edits)} file(s): {', '.join(all_edits)}. Output: {output[:500]}"
+        )
         return self._semantic_check.execute(
             task_intent=task,
             solution_summary=solution_summary,
@@ -909,9 +944,16 @@ class ReactAgent:
             if steps_since_edit >= max_steps_without_edit:
                 convergence_nudges += 1
                 if convergence_nudges > max_nudges:
-                    log.warning("Convergence: %d nudges ignored, force-finishing", convergence_nudges - 1)
+                    log.warning(
+                        "Convergence: %d nudges ignored, force-finishing", convergence_nudges - 1
+                    )
                     break
-                log.warning("Convergence: %d steps without edit, nudging (nudge %d/%d)", steps_since_edit, convergence_nudges, max_nudges)
+                log.warning(
+                    "Convergence: %d steps without edit, nudging (nudge %d/%d)",
+                    steps_since_edit,
+                    convergence_nudges,
+                    max_nudges,
+                )
                 # Inject a stronger nudge into the conversation
                 nudge_msg = (
                     f"URGENT: You have taken {steps_since_edit} steps without making any file changes. "
@@ -928,10 +970,12 @@ class ReactAgent:
                         "FINAL WARNING. Call finish NOW with your best summary of findings. "
                         "Do NOT attempt any more tool calls."
                     )
-                messages.append({
-                    "role": "user",
-                    "content": nudge_msg,
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": nudge_msg,
+                    }
+                )
                 steps_since_edit = 0  # Reset after nudge
 
             # Context management: truncate if too long
@@ -950,7 +994,9 @@ class ReactAgent:
                 log.error("Model call failed after retries: %s", e)
                 break
 
-            response = replace(response, content=response.content or "")  # some providers return None on tool-only turns
+            response = replace(
+                response, content=response.content or ""
+            )  # some providers return None on tool-only turns
 
             # Track tokens
             if hasattr(response, "usage"):
@@ -972,7 +1018,9 @@ class ReactAgent:
                         "gen_ai.usage.prompt_tokens": getattr(usage, "prompt_tokens", 0),
                         "gen_ai.usage.completion_tokens": getattr(usage, "completion_tokens", 0),
                         "gen_ai.usage.total_tokens": getattr(usage, "total_tokens", 0),
-                    } if hasattr(response, "usage") else {},
+                    }
+                    if hasattr(response, "usage")
+                    else {},
                     **({"step": step_num, "run_id": metrics.run_id}),
                 )
 
@@ -1007,14 +1055,16 @@ class ReactAgent:
                         edits_made=all_edits,
                     )
                 messages.append({"role": "assistant", "content": response.content})
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "Your last response could not be parsed. Respond with EXACTLY one JSON "
-                        'object: {"thought": "...", "action": "tool_name", "action_input": {...}}. '
-                        "Use the exact tool name, not free text like 'Tool: name'."
-                    ),
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your last response could not be parsed. Respond with EXACTLY one JSON "
+                            'object: {"thought": "...", "action": "tool_name", "action_input": {...}}. '
+                            "Use the exact tool name, not free text like 'Tool: name'."
+                        ),
+                    }
+                )
                 continue
             parse_failures = 0
 
@@ -1086,17 +1136,19 @@ class ReactAgent:
                     steps_since_edit += 1
 
             # Record interpretability trace
-            trace.steps.append(ReasoningStep(
-                step=step_num,
-                thought=thought,
-                action=action,
-                action_input=action_input,
-                observation=observation[:500],
-                is_final=is_final,
-                loop_guard_triggered=loop_guard_triggered,
-                duration_ms=step_duration,
-                decision_rationale=decision_rationale,
-            ))
+            trace.steps.append(
+                ReasoningStep(
+                    step=step_num,
+                    thought=thought,
+                    action=action,
+                    action_input=action_input,
+                    observation=observation[:500],
+                    is_final=is_final,
+                    loop_guard_triggered=loop_guard_triggered,
+                    duration_ms=step_duration,
+                    decision_rationale=decision_rationale,
+                )
+            )
 
             step = AgentStep(
                 step_number=step_num,
@@ -1141,9 +1193,14 @@ class ReactAgent:
                 if self._verifier and output.strip():
                     # Only run verification on code-like output (skip for plain text)
                     looks_like_code = (
-                        "def " in output or "class " in output or "import " in output
-                        or "function " in output or "const " in output or "var " in output
-                        or output.strip().startswith("{") or output.strip().startswith("[")
+                        "def " in output
+                        or "class " in output
+                        or "import " in output
+                        or "function " in output
+                        or "const " in output
+                        or "var " in output
+                        or output.strip().startswith("{")
+                        or output.strip().startswith("[")
                     )
                     if looks_like_code:
                         verification = self._verifier.verify(output, context.cwd)
@@ -1180,9 +1237,11 @@ class ReactAgent:
                 )
                 verification.append(spec_evidence)
 
-                verification_passed = all(
-                    v.status == VerificationStatus.PASSED for v in verification
-                ) if verification else True
+                verification_passed = (
+                    all(v.status == VerificationStatus.PASSED for v in verification)
+                    if verification
+                    else True
+                )
 
                 metrics.verification_passed = verification_passed
                 metrics.edits_made = len(all_edits)

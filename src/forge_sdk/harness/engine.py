@@ -129,16 +129,20 @@ class EvolutionEngine:
 
             for pattern in failure_patterns:
                 # Check if we already have a fragment for this pattern
-                existing = [f for f in prompt.fragments
-                           if pattern["topic"] in f.content.lower()
-                           and f.source == "evolved"]
+                existing = [
+                    f
+                    for f in prompt.fragments
+                    if pattern["topic"] in f.content.lower() and f.source == "evolved"
+                ]
 
                 if not existing:
                     # Dedup: check if any evolved fragment already addresses this topic
                     topic_root = pattern["topic"].split("_")[0]  # "import_errors" -> "import"
-                    similar = [f for f in prompt.fragments
-                               if f.source == "evolved"
-                               and topic_root in f.content.lower()]
+                    similar = [
+                        f
+                        for f in prompt.fragments
+                        if f.source == "evolved" and topic_root in f.content.lower()
+                    ]
 
                     if not similar:
                         # Add new fragment to address the failure
@@ -147,15 +151,18 @@ class EvolutionEngine:
                             priority=60,
                             source="evolved",
                         )
-                        mutations.append({
-                            "type": "add_fragment",
-                            "fragment_id": fragment.id,
-                            "topic": pattern["topic"],
-                        })
+                        mutations.append(
+                            {
+                                "type": "add_fragment",
+                                "fragment_id": fragment.id,
+                                "topic": pattern["topic"],
+                            }
+                        )
                         fragments_added += 1
 
                         # Record as knowledge — F6 fix: UUID not count-based
                         from forge_sdk.security import generate_uuid_id
+
                         knowledge = Knowledge(
                             id=generate_uuid_id("know"),
                             rule=pattern["suggestion"],
@@ -171,22 +178,24 @@ class EvolutionEngine:
         for frag in low_performing:
             if frag.id != "base":  # Never remove the base prompt
                 prompt.remove_fragment(frag.id)
-                mutations.append({
-                    "type": "remove_fragment",
-                    "fragment_id": frag.id,
-                    "score": frag.score,
-                })
+                mutations.append(
+                    {
+                        "type": "remove_fragment",
+                        "fragment_id": frag.id,
+                        "score": frag.score,
+                    }
+                )
                 fragments_removed += 1
 
         # --- Phase 4: Strengthen/weaken knowledge from outcomes ---
         for episode in recent_episodes:
             # Find related knowledge and update
             for knowledge in self._store.get_knowledge(domain=episode.domain):
-                if any(keyword in episode.task.lower()
-                       for keyword in knowledge.rule.lower().split()[:3]):
-                    self._store.update_knowledge(
-                        knowledge.id, episode.id, episode.success
-                    )
+                if any(
+                    keyword in episode.task.lower()
+                    for keyword in knowledge.rule.lower().split()[:3]
+                ):
+                    self._store.update_knowledge(knowledge.id, episode.id, episode.success)
 
         # --- Phase 5: Calculate score delta ---
         if successes and failures:
@@ -200,15 +209,17 @@ class EvolutionEngine:
 
         # --- Phase 6: Evolve profile if significant mutations ---
         if mutations:
-            profile = profile.evolve({
-                "performance_score": new_score,
-                "metadata": {
-                    **profile.metadata,
-                    "last_evolution": time.time(),
-                    "fragments_added": fragments_added,
-                    "fragments_removed": fragments_removed,
-                },
-            })
+            profile = profile.evolve(
+                {
+                    "performance_score": new_score,
+                    "metadata": {
+                        **profile.metadata,
+                        "last_evolution": time.time(),
+                        "fragments_added": fragments_added,
+                        "fragments_removed": fragments_removed,
+                    },
+                }
+            )
 
         # --- Gate check: rollback if performance doesn't improve ---
         gated = False
@@ -266,11 +277,13 @@ class EvolutionEngine:
         for category, episodes in error_types.items():
             if len(episodes) >= 2:  # Need at least 2 occurrences
                 suggestion = self._generate_suggestion(category)
-                patterns.append({
-                    "topic": category,
-                    "count": len(episodes),
-                    "suggestion": suggestion,
-                })
+                patterns.append(
+                    {
+                        "topic": category,
+                        "count": len(episodes),
+                        "suggestion": suggestion,
+                    }
+                )
 
         return patterns
 

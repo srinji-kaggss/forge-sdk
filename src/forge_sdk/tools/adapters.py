@@ -66,7 +66,7 @@ class LgwksToolAdapter:
                             success=False,
                             output="",
                             error=f"Command parse failed (unbalanced quotes): {exc}. "
-                                  f"Fix the quoting. shell=True fallback is disabled for security.",
+                            f"Fix the quoting. shell=True fallback is disabled for security.",
                             metadata={"command": command, "blocked": True},
                         )
 

@@ -74,7 +74,9 @@ class MeshModelPort:
     ) -> ModelResponse:
         provider_name, model_id = self._resolve_model()
         provider = self._get_provider(provider_name)
-        return provider.complete(messages, temperature=temperature, max_tokens=max_tokens, stop=stop)
+        return provider.complete(
+            messages, temperature=temperature, max_tokens=max_tokens, stop=stop
+        )
 
     def complete_stream(
         self,
@@ -113,6 +115,7 @@ class MeshModelPort:
         """Get or create cached provider instance."""
         if provider_name not in self._providers:
             from forge_sdk.models import registry as _registry
+
             model_id = self._resolve_model()[1]
             self._providers[provider_name] = _registry.create(provider_name, model=model_id)
         return self._providers[provider_name]

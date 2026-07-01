@@ -102,10 +102,12 @@ class AgentProfile:
         current.update(mutations)
         current["generation"] = self.generation + 1
         current["parent_version"] = self.version
-        current["mutation_history"] = self.mutation_history + [{
-            "generation": self.generation,
-            "mutations": list(mutations.keys()),
-        }]
+        current["mutation_history"] = self.mutation_history + [
+            {
+                "generation": self.generation,
+                "mutations": list(mutations.keys()),
+            }
+        ]
         return AgentProfile.from_dict(current)
 
     def clone(self, **overrides: Any) -> AgentProfile:

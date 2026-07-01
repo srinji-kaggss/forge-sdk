@@ -57,7 +57,9 @@ class AgentResult:
     artifacts: dict[str, Any] = field(default_factory=dict)
     verification: list[Any] = field(default_factory=list)  # list[VerificationEvidence]
     edits_made: list[str] = field(default_factory=list)  # file paths modified during run
-    named_targets_missing: list[str] = field(default_factory=list)  # files named in the task but never edited (advisory, see v0.5.2)
+    named_targets_missing: list[str] = field(
+        default_factory=list
+    )  # files named in the task but never edited (advisory, see v0.5.2)
 
     @property
     def verification_summary(self) -> str:
