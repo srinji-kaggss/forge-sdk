@@ -144,8 +144,10 @@ class _NativeToolCallModel:
 
     def __init__(self):
         self._step = 0
+        self.received_messages: list[list[dict]] = []
 
     def complete(self, messages, *, temperature=0.0, max_tokens=None, stop=None, tools=None):
+        self.received_messages.append(list(messages))  # snapshot -- react.py mutates the same list in place
         self._step += 1
         if self._step == 1:
             return ModelResponse(
@@ -183,6 +185,29 @@ async def test_agent_dispatches_directly_from_native_tool_calls(tmp_path):
     assert result.steps[0].action == "write_file"
     assert result.steps[1].action == "finish"
     assert result.steps[1].is_final is True
+
+
+async def test_native_tool_call_leaves_a_readable_trace_in_message_history(tmp_path):
+    """Live bug: a native tool call leaves response.content empty, so the
+    assistant turn recorded in `messages` was blank -- on the next turn the
+    model had no way to tell "Tool output: ..." was the result of its OWN
+    prior action, and in a real run this produced a stuck loop re-issuing
+    the exact same call the LoopGuard had already blocked. Assert the
+    second complete() call's message history contains a real record of
+    what was called, not an empty assistant turn.
+    """
+    model = _NativeToolCallModel()
+    agent = ReactAgent(model=model, tools=_fake_tools_registry())
+    context = AgentContext(task="create a test file", cwd=str(tmp_path), max_steps=5)
+
+    await agent.arun(context)
+
+    assert len(model.received_messages) == 2
+    second_call_messages = model.received_messages[1]
+    assistant_turns = [m for m in second_call_messages if m["role"] == "assistant"]
+    assert len(assistant_turns) == 1
+    assert assistant_turns[0]["content"] != ""
+    assert "write_file" in assistant_turns[0]["content"]
 
 
 def test_tool_schemas_includes_synthetic_finish_tool():
