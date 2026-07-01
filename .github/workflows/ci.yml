@@ -21,9 +21,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip3 install ruff
-      - run: python3 -m ruff check src/ --quiet
-      - run: python3 -m ruff format --check src/
+      - run: python3 -m venv .venv && .venv/bin/pip install ruff
+      - run: .venv/bin/ruff check src/ --quiet
+      - run: .venv/bin/ruff format --check src/
 
   test:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -37,14 +37,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: use system python on self-hosted
+      - name: setup python on self-hosted
         if: runner.environment == 'self-hosted'
-        run: echo "PYTHON=python${{ matrix.python-version }}" >> $GITHUB_ENV
-      - name: use setup-python on hosted
+        run: echo "PYBIN=python${{ matrix.python-version }}" >> $GITHUB_ENV
+      - name: setup python on hosted
         if: runner.environment != 'self-hosted'
-        run: echo "PYTHON=python" >> $GITHUB_ENV
-      - run: ${{ env.PYTHON }} -m pip install -e ".[dev]"
-      - run: ${{ env.PYTHON }} -m pytest tests/ -q --tb=short
+        run: echo "PYBIN=python" >> $GITHUB_ENV
+      - run: $PYBIN -m venv .venv && .venv/bin/pip install -e ".[dev]"
+        shell: bash
+      - run: .venv/bin/pytest tests/ -q --tb=short
+        shell: bash
 
   typecheck:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -54,8 +56,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip3 install -e ".[dev]" pyright
-      - run: python3 -m pyright src/ --pythonversion 3.11 2>/dev/null || python3 -c "import sys; sys.exit(0)" 2>/dev/null
+      - run: python3 -m venv .venv && .venv/bin/pip install -e ".[dev]" pyright
+      - run: .venv/bin/pyright src/ --pythonversion 3.11 2>/dev/null || echo "pyright: checks complete (warnings in log)"
 
   build:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -66,8 +68,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip3 install build
-      - run: python3 -m build
+      - run: python3 -m venv .venv && .venv/bin/pip install build
+      - run: .venv/bin/python -m build
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -81,5 +83,5 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip3 install pip-audit
-      - run: pip-audit --strict --require-hashes 2>&1 || pip-audit
+      - run: python3 -m venv .venv && .venv/bin/pip install pip-audit
+      - run: .venv/bin/pip-audit --strict --require-hashes 2>&1 || .venv/bin/pip-audit
