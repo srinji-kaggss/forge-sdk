@@ -134,6 +134,30 @@ def test_spec_conformance_finds_artifact_in_output_when_not_in_edits():
     assert evidence.status == VerificationStatus.PASSED
 
 
+def test_spec_conformance_excludes_currently_excluded_phrasing():
+    """Regression: a real forge run (dogfooding against lgwks) false-failed
+    on this exact phrasing. "two currently-excluded modules: a.py and b.py"
+    has no exclude-context keyword nearby (only the sentence's leading verb
+    "add", 60+ chars back) — a.py/b.py got required even though a later,
+    explicit "Do NOT modify a.py or b.py" in the same task correctly
+    resolved as excluded. Since task_files unions every mention of a
+    filename, the earlier false-positive mention couldn't be undone by the
+    later correct one — the model did the task correctly and forge still
+    reported FAILED.
+    """
+    task = (
+        "add smoke-import tests for two currently-excluded modules: "
+        "a.py (32 lines) and b.py (40 lines). Create tests/test_smoke.py. "
+        "Do NOT modify a.py or b.py themselves, they are already correct "
+        "and out of scope."
+    )
+    all_edits = ["tests/test_smoke.py", "tests/test_coverage.py"]
+    output = "Created tests/test_smoke.py; edited tests/test_coverage.py"
+
+    evidence = spec_conformance_check(task, all_edits, output)
+    assert evidence.status != VerificationStatus.FAILED
+
+
 # ── SemanticCheck wire-up tests ────────────────────────────────────
 
 

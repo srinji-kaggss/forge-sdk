@@ -70,7 +70,8 @@ _SPEC_TARGET_EXCLUDE_CONTEXT = re.compile(
     r"don'?t\s+(?:edit|modify|write|change|touch|create)|"
     r"without\s+(?:editing|modifying|writing|changing|touching)|"
     r"read(?:\s+only)?|leave\s+(?:alone|untouched)|except|other\s+than|"
-    r"itself|check|verify|review|test\s+for|peek\s+at)\b",
+    r"itself|check|verify|review|test\s+for|peek\s+at|"
+    r"exclud(?:e|ed|ing)|out\s+of\s+scope|already\s+correct)\b",
     re.IGNORECASE,
 )
 _SPEC_FILE_PATH_TOKEN = re.compile(r"\b[\w][\w./-]*\.[A-Za-z]{1,5}\b")
