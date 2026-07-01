@@ -47,6 +47,18 @@ All notable changes to forge-sdk are documented here. Format loosely follows
 - 801-line `docs/FORGE-EXPERIENCE-SPEC.md`: topological map of every frontier CLI agent (Claude Code, OpenCode, Cline, Aider, Goose, Qwen Code, Codex CLI, Gemini CLI), gap analysis, layered L1-L5 architecture
 - 15 hardening amendments from 7 source packs: excellent_code_framework, human_like_corpus_model_os, ai_semantic_rag_pack, okf_dev_role_delta_pack-2, translation_harness_blueprint, debuggable_codebase_okf_2026
 
+### Fixed Issues
+- [#65](https://github.com/srinji-kaggss/forge-sdk/issues/65) — forge CLI broken: ImportError on google.genai (guarded import)
+- [#56](https://github.com/srinji-kaggss/forge-sdk/issues/56) — [frontier-gap] permission-tiered HITL and lifecycle hooks (L5a)
+- [#53](https://github.com/srinji-kaggss/forge-sdk/issues/53) — [frontier-gap] durable run checkpoints, resume, and forkable sessions (L5b)
+- [#11](https://github.com/srinji-kaggss/forge-sdk/issues/11) — Failure-Taxonomy countermeasures (partial: L4 honest termination + LoopGuard)
+- [#19](https://github.com/srinji-kaggss/forge-sdk/issues/19) — Finish action must include tool output summary (partial: L4 truthful failure_reason)
+- [#18](https://github.com/srinji-kaggss/forge-sdk/issues/18) — Ambiguous tasks cause agent to spin (partial: L4 convergence detector)
+- [#9](https://github.com/srinji-kaggss/forge-sdk/issues/9) — Keel CI deterministic verification floor (confirmed: all 7 CI jobs green on PR #66)
+
+### Docs
+- `PLAYBOOK.md`: repeatable verification & release playbook (3-command quick verify, full CI, release process, observability, test inventory, failure taxonomy, layer map)
+
 ## [Unreleased] — targeting 0.6.1 (now shipped as 0.7.0)
 
 Eight PRs open against `main`, none merged yet — this section documents what's
