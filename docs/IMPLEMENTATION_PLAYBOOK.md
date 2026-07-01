@@ -76,10 +76,10 @@ PROVIDERS:   forge-gemini | forge-ollama | forge-openai | forge-mcp
 | REQ-VER-002 | verifier.rs | Fail-fast on gate failure, budget-aware skip for SemanticCheck/PropertyCheck under pressure (NEW clause 2026-07-01) | Unit test | SIL2 |
 | REQ-VER-003 | verifier.rs | VerificationEvidence carries stable_id + closed GateFailureReason (NEW 2026-07-01, replaces free-text detail) | Unit test | SIL2 |
 | REQ-VER-004 | verifier.rs | VerificationContext defined with task/all_edits/output/solution_summary/model_port (⚠️ NEW ID 2026-07-01 — was undefined) | Unit test | SIL2 |
-| REQ-SESS-001 | session.rs | Session save/load/list/delete | Integration test | SIL2 |
-| REQ-SESS-002 | session.rs | FileSessionStore at ~/.forge/checkpoints/ | Unit test | SIL2 |
-| REQ-DOC-001 | doctor.rs | L0-L5 DoctorEngine with escalation ladder | Integration test | SIL2 |
-| REQ-DOC-002 | doctor.rs | DoctorStatus covers 4 variants | Match exhaustiveness | SIL1 |
+| REQ-SESS-001 | session.rs | checkpoint_save/restore/list ported from real session.py (⚠️ CORRECTED 2026-07-01: real Python has no `delete()`, no `SessionStatus`, no full event-vec storage — see §2.9) | Integration test | SIL2 |
+| REQ-SESS-002 | session.rs | Checkpoint dir at ~/.forge/checkpoints/, prune-oldest-after-save (max_checkpoints), partial-match restore (⚠️ both real behaviors, previously unspecced) | Unit test | SIL2 |
+| REQ-DOC-001 | doctor.rs | 5-check ladder L0-L4, real grouping (⚠️ CORRECTED 2026-07-01, was "L0-L5" 6-check: real Python combines config+api-key at L1, trace+audit-dir at L2, connectivity+model-ping at L4+L5, and has an L3 working-dir check the original spec omitted entirely — see §2.10) | Integration test | SIL2 |
+| REQ-DOC-002 | doctor.rs | DoctorStatus covers 3 variants, not 4 (⚠️ CORRECTED 2026-07-01: real Python has PASS/FAIL/WARN only, no SKIP) | Match exhaustiveness | SIL1 |
 | REQ-GRD-001 | guard.rs | LoopGuard with 5 break paths | Unit all 5 | SIL3 |
 | REQ-GRD-002 | guard.rs | Convergence failure after N nudges | Unit test | SIL2 |
 | REQ-SEC-001 | security.rs | Command::new().arg().output() NOT string parsing | Static analysis | SIL3 |
@@ -490,6 +490,158 @@ impl AutoRouter {
 **Language-cost-aware extension (see REFACTORED-PLAN-COMPLETE.md Part 10, added same hardening pass)**: `AutoRouter`'s candidate ordering should additionally consult `forge-catalog`'s models.dev data + this project's own audit-log-derived tokens-per-`(model, detected_language)` history, preferring the empirically cheapest capable model for non-English-heavy requests — not just the first model in a static list. Same struct, one more input signal; not a separate module.
 
 **Verification:** unit test each `RouteFailure` variant is handled per (a)/(b)/(c) above; integration test against a mock provider that returns 429-with-retry-after then succeeds; integration test confirming a `NotFound` model is never retried twice in one session; unit test that the final result always carries the actually-used model string, never leaves it implicit.
+
+---
+
+### 2.9 session.rs — SessionState, checkpoint save/restore/list
+
+**⚠️ Gap found 2026-07-01:** the master spec's §7 (`Session`/`SessionStore` trait/`FileSessionStore`/`SessionStatus`) is considerably more abstracted than real Python, and — same pattern as router.rs/verifier.rs — was never checked against it. Ground truth: `src/forge_sdk/cli/session.py` (92 lines, real, complete, no gaps).
+
+**What's real vs. invented:**
+- Real Python `SessionState` fields: `session_id, task, model, step_count, tool_calls_made: list[str], files_touched: list[str], errors: list[str], token_usage: dict, cost_usd, checkpoint_step, timestamp, extra: dict`. This is much lighter than the master spec's `Session { session_id, trace_id, run_id, created_at, updated_at, context: AgentContext, events: Vec<AgentEvent>, current_step, status, total_tokens, total_cost, checkpoint_path }` — notably, **real Python does NOT store the full event stream in a checkpoint** (no `events: Vec<AgentEvent>` equivalent), just summary counters/lists. Storing the full event vec would be a real, unflagged scope increase (checkpoint file size, serialization cost) — port the lighter real shape, don't silently upgrade to storing everything "because Rust can."
+- Real Python has an `extra: dict` escape hatch (forward-compat field) — port it as `extra: HashMap<String, serde_json::Value>`.
+- Real Python has **no `SessionStatus` enum at all** (Active/Paused/Completed/Failed has zero precedent) and **no `delete()` operation** (only save/restore/list). The `SessionStore` trait's `async fn delete()` (§7) is genuinely new capability — keep it if wanted (deleting old sessions is a reasonable ask), but label it new, don't imply it's a port.
+- Real Python's `checkpoint_restore()` has a **nice, real UX feature the master spec never mentions**: if the exact `session_id` isn't found, it globs for `{session_id}*.json` and returns the most-recently-modified partial match. Don't drop this silently — it's a real feature, not an accident, and a straight port that only does exact-match lookup would be a regression.
+- Real Python's `checkpoint_save()` prunes automatically: after writing, it globs all checkpoints, sorts by mtime, and deletes the oldest until the count is back under `max_checkpoints` (default 10). This prune-on-save behavior is real and must be ported — the master spec's `FileSessionStore` names `max_checkpoints` as a CLI flag (§9) but never specs the prune logic itself.
+
+**Implementation Contract:**
+
+```rust
+// Ported from src/forge_sdk/cli/session.py::SessionState.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionState {
+    pub session_id: String,
+    pub task: String,
+    pub model: String,
+    pub step_count: u32,
+    pub tool_calls_made: Vec<String>,
+    pub files_touched: Vec<String>,
+    pub errors: Vec<String>,
+    pub token_usage: HashMap<String, serde_json::Value>,
+    pub cost_usd: f64,
+    pub checkpoint_step: u32,
+    pub timestamp: f64,
+    pub extra: HashMap<String, serde_json::Value>,  // forward-compat escape hatch, ported as-is
+}
+
+pub const DEFAULT_CHECKPOINT_DIR: &str = "~/.forge/checkpoints";  // resolve via dirs::home_dir(),
+                                                                    // not a literal ~ at runtime
+
+/// Ported from checkpoint_save(). MUST preserve the prune-oldest-after-write
+/// behavior — this is real, load-bearing behavior, not incidental.
+pub fn checkpoint_save(state: &mut SessionState, checkpoint_dir: &Path, max_checkpoints: usize) -> Result<PathBuf, SessionError> { /* ... */ }
+
+/// Ported from checkpoint_restore(). MUST preserve the partial-match glob
+/// fallback (most-recently-modified match wins) when the exact session_id
+/// file doesn't exist — real UX behavior, not an edge case to drop.
+pub fn checkpoint_restore(session_id: &str, checkpoint_dir: &Path) -> Result<Option<SessionState>, SessionError> { /* ... */ }
+
+/// Ported from list_checkpoints(). Real Python truncates `task` to 80 chars
+/// for display (`data.get("task", "")[:80]` — this is a BYTE slice in
+/// Python 2-style semantics but Python 3 str slicing is codepoint-based, so
+/// this one actually IS char-safe in the original; use .chars().take(80)
+/// in Rust to match, not a byte slice).
+pub fn list_checkpoints(checkpoint_dir: &Path) -> Vec<SessionSummary> { /* ... */ }
+
+pub struct SessionSummary {  // NEW name — Python returns a bare dict, Rust gets a typed struct;
+                               // fields are 1:1 with the real dict keys (session_id, task, steps,
+                               // timestamp, file), not invented
+    pub session_id: String,
+    pub task: String,      // truncated to 80 chars
+    pub steps: u32,
+    pub timestamp: f64,
+    pub file: PathBuf,
+}
+```
+
+**Verification:** unit test prune-on-save (write 12 checkpoints with `max_checkpoints=10`, assert exactly 10 remain, oldest 2 gone); unit test partial-match restore (write `session_id="abc123-full"`, restore with `session_id="abc123"`, assert it matches); unit test `list_checkpoints` truncates task to 80 chars via char count.
+
+### 2.10 doctor.rs — DoctorEngine (real L0-L5 levels, corrected)
+
+**⚠️ Gap found 2026-07-01:** the master spec's §8 L0-L5 escalation-ladder labels **do not match real Python's actual check levels or grouping**. Checked `src/forge_sdk/cli/doctor.py` (516 lines) directly.
+
+**Master spec claimed:** `L0=Runtime, L1=Config, L2=Provider Auth, L3=Connectivity, L4=Write Test, L5=Full Model`.
+
+**Real Python, verified:** `L0` = Python version check only (`_check_python_version`, not a generic "Runtime" check — no rustc/cargo equivalent exists because there's no Rust yet). `L1` = **both** config-file-valid (`_check_config`) **and** provider API-key-present (`_check_api_key`) — the master spec splits these into L1/L2, real code has them both at L1. `L2` = trace-dir-writable (`_check_trace_dir`) **and** audit-dir-writable (`_check_audit_dir`) — the master spec calls this "L4 Write Test," a mismatched level number. `L3` = working-directory-exists-and-readable (`_check_working_directory`) — **the master spec has no check at this position at all.** `L4+L5 combined` = provider connectivity **and** a real model ping, done as one combined check (`_check_provider_connectivity`, docstring literally says "L4+L5") — the master spec splits these into separate L3/L5 slots.
+
+**Resolution**: rename to match real behavior, group L4/L5 as the real code does (one combined check, not two separate ones) rather than inventing a split that doesn't exist:
+
+```rust
+#[async_trait]
+pub trait DoctorCheck: Send + Sync {
+    fn level(&self) -> u8;      // 0-4, matching real Python's actual 5 checks (not 6)
+    fn name(&self) -> &str;
+    async fn run(&self) -> DoctorResult;
+}
+
+/// Ported from CheckResult (real, verified). Note: real Python's `status`
+/// is one of exactly 3 strings (PASS/FAIL/WARN) — there is no "SKIP" status
+/// anywhere in doctor.py. DoctorStatus::Skip (master spec §8) has no
+/// Python precedent; keep it only if there's a real reason a Rust doctor
+/// check would skip rather than fail (e.g. a platform-specific check on
+/// the wrong OS) — don't port it just because the enum had 4 variants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorResult {
+    pub level: u8,
+    pub label: String,
+    pub status: DoctorStatus,
+    pub detail: String,
+    pub duration_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DoctorStatus { Pass, Fail, Warn }  // 3 variants, not 4 — see note above
+
+/// Ported from EscalationRecord (real — the master spec's file-tree comment
+/// named this type correctly but never specced its fields anywhere; this is
+/// the audit record written before ANY model call, i.e. before L4+L5 runs).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscalationRecord {
+    pub escalation_level: String,
+    pub timestamp_iso: String,
+    pub provider: String,
+    pub model: String,
+    pub reason: String,
+    pub prior_checks_passed: u32,
+    pub prior_checks_total: u32,
+}
+
+pub struct DoctorEngine {
+    checks: Vec<Box<dyn DoctorCheck>>,
+}
+
+impl DoctorEngine {
+    /// Real 5-check ladder, in Python's own real order and grouping —
+    /// NOT the master spec's invented 6-check RuntimeCheck/ConfigCheck/
+    /// ProviderAuthCheck/ConnectivityCheck/WriteTestCheck/ModelSmokeCheck
+    /// list, which doesn't correspond to any real function in doctor.py.
+    pub fn new() -> Self { Self { checks: vec![
+        Box::new(PythonVersionCheck),      // L0 — becomes a RustToolchainCheck-equivalent once
+                                            //      this is actually the Rust binary; keep the
+                                            //      *position* (L0, always first), change what it
+                                            //      checks (rustc/cargo version) since "Python
+                                            //      version" stops being meaningful once ported
+        Box::new(ConfigAndApiKeyCheck),    // L1 — combined, matches real grouping
+        Box::new(TraceAndAuditDirCheck),   // L2 — combined, matches real grouping
+        Box::new(WorkingDirectoryCheck),   // L3 — was MISSING from the master spec entirely
+        Box::new(ProviderConnectivityAndModelPingCheck),  // L4+L5 combined, matches real grouping —
+                                            // writes an EscalationRecord before running, since this
+                                            // is the one check that actually calls a model
+    ]}}
+    pub async fn run_all(&self) -> DoctorReport {
+        let mut r = Vec::new();
+        for c in &self.checks {
+            let result = c.run().await;
+            r.push(result.clone());
+            if result.status == DoctorStatus::Fail { break; }  // matches real Python: L4+L5
+                                                                  // "only if L0-L3 all pass"
+        }
+        DoctorReport { checks: r }
+    }
+}
+```
+
+**Verification:** unit test each of the 5 real checks independently; integration test confirming L4+L5 does NOT run if any of L0-L3 fails (matches real Python's explicit `# ---- L4+L5: Model ping (only if L0-L3 all pass) ----` comment); unit test `EscalationRecord` is written before, not after, the model-ping check fires.
 
 ---
 
