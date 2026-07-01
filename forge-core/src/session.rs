@@ -31,6 +31,18 @@ pub enum SessionError {
     Serde(String),
     NotFound(String),
 }
+
+impl From<std::io::Error> for SessionError {
+    fn from(e: std::io::Error) -> Self {
+        SessionError::Io(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for SessionError {
+    fn from(e: serde_json::Error) -> Self {
+        SessionError::Serde(e.to_string())
+    }
+}
 /// Save checkpoint with prune-on-save (keeps at most max_checkpoints).
 pub fn checkpoint_save(
     state: &mut SessionState,

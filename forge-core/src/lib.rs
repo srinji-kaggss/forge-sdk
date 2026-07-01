@@ -8,12 +8,14 @@
 //! components: events, results, context, steps, and model ports.
 
 pub mod agent;
+pub mod config;
 pub mod context;
 pub mod doctor;
 pub mod event;
 pub mod guard;
 pub mod permission;
 pub mod port;
+pub mod router;
 pub mod result;
 pub mod session;
 pub mod step;
