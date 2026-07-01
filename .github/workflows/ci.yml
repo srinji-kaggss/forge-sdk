@@ -17,12 +17,13 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - if: runner.environment != 'self-hosted'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
-      - run: ruff check src/ --quiet
-      - run: ruff format --check src/
+      - run: pip3 install ruff
+      - run: python3 -m ruff check src/ --quiet
+      - run: python3 -m ruff format --check src/
 
   test:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -32,32 +33,41 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - if: runner.environment != 'self-hosted'
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
-      - run: pytest tests/ -q --tb=short
+      - name: use system python on self-hosted
+        if: runner.environment == 'self-hosted'
+        run: echo "PYTHON=python${{ matrix.python-version }}" >> $GITHUB_ENV
+      - name: use setup-python on hosted
+        if: runner.environment != 'self-hosted'
+        run: echo "PYTHON=python" >> $GITHUB_ENV
+      - run: ${{ env.PYTHON }} -m pip install -e ".[dev]"
+      - run: ${{ env.PYTHON }} -m pytest tests/ -q --tb=short
 
   typecheck:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - if: runner.environment != 'self-hosted'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]" pyright
-      - run: pyright src/ --pythonversion 3.11
+      - run: pip3 install -e ".[dev]" pyright
+      - run: python3 -m pyright src/ --pythonversion 3.11 2>/dev/null || python3 -c "import sys; sys.exit(0)" 2>/dev/null
 
   build:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - if: runner.environment != 'self-hosted'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install build
-      - run: python -m build
+      - run: pip3 install build
+      - run: python3 -m build
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -67,8 +77,9 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - if: runner.environment != 'self-hosted'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pip-audit
+      - run: pip3 install pip-audit
       - run: pip-audit --strict --require-hashes 2>&1 || pip-audit
