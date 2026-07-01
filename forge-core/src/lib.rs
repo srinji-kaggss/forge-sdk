@@ -7,6 +7,7 @@
 //! This crate provides foundational types and traits used by all forge
 //! components: events, results, context, steps, and model ports.
 
+pub mod agent;
 pub mod context;
 pub mod event;
 pub mod permission;

@@ -198,6 +198,52 @@ pub struct AgentResult {
 }
 
 impl AgentResult {
+    /// Create a successful AgentResult from completed steps.
+    pub fn new_success(steps: &[AgentStep]) -> Self {
+        Self {
+            success: true,
+            output: String::new(),
+            steps: steps.to_vec(),
+            total_steps: steps.len() as u32,
+            total_tokens: 0,
+            total_cost: 0.0,
+            duration_ms: 0,
+            trace_id: String::new(),
+            run_id: String::new(),
+            model: String::new(),
+            provider: String::new(),
+            edits_made: vec![],
+            named_targets_missing: vec![],
+            failure_reason: None,
+            verification: vec![],
+            change_manifest: None,
+            rollback_plan: None,
+        }
+    }
+
+    /// Create a premature shutdown AgentResult with a failure reason.
+    pub fn new_premature_shutdown(reason: String, steps: &[AgentStep]) -> Self {
+        Self {
+            success: false,
+            output: reason.clone(),
+            steps: steps.to_vec(),
+            total_steps: steps.len() as u32,
+            total_tokens: 0,
+            total_cost: 0.0,
+            duration_ms: 0,
+            trace_id: String::new(),
+            run_id: String::new(),
+            model: String::new(),
+            provider: String::new(),
+            edits_made: vec![],
+            named_targets_missing: vec![],
+            failure_reason: Some(FailureReason::MaxStepsReached),
+            verification: vec![],
+            change_manifest: None,
+            rollback_plan: None,
+        }
+    }
+
     /// Validate the invariants that are not type-enforced.
     ///
     /// Returns `Ok(())` if all invariants hold, `Err(msg)` otherwise.
