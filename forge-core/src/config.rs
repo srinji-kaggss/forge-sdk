@@ -218,7 +218,9 @@ impl ForgeConfig {
 // ---------------------------------------------------------------------------
 
 fn dirs_or_default() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 // ---------------------------------------------------------------------------
@@ -227,10 +229,9 @@ fn dirs_or_default() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::test_helpers::EnvGuard;
+    use super::test_helpers::{EnvGuard, ScratchDir};
     use super::*;
     use std::env;
-    use tempfile::TempDir;
 
     #[test]
     fn test_defaults() {
@@ -287,7 +288,7 @@ mod tests {
 
         // -- test: save and reload ------------------------------------------------
         env::remove_var("FORGE_API_KEY");
-        let tmp = TempDir::new().unwrap();
+        let tmp = ScratchDir::new("forge-config-test");
         let config_path = tmp.path().join("config.json");
 
         let original = ForgeConfig {
@@ -330,6 +331,9 @@ mod tests {
 #[cfg(test)]
 mod test_helpers {
     use std::env;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     pub(super) struct EnvGuard {
         key: String,
         old: Option<String>,
@@ -346,6 +350,32 @@ mod test_helpers {
                 Some(v) => env::set_var(&self.key, v),
                 None => env::remove_var(&self.key),
             }
+        }
+    }
+
+    /// Minimal std-only stand-in for `tempfile::TempDir`: creates a uniquely
+    /// named directory under `std::env::temp_dir()` and removes it on drop.
+    pub(super) struct ScratchDir {
+        path: PathBuf,
+    }
+    impl ScratchDir {
+        pub(super) fn new(prefix: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let path = env::temp_dir().join(format!(
+                "{prefix}-{}-{n}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+        pub(super) fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 }
