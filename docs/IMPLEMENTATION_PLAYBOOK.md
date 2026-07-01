@@ -65,7 +65,7 @@ PROVIDERS:   forge-gemini | forge-ollama | forge-openai | forge-mcp
 | REQ-RES-001 | result.rs | AgentResult carries verification[] | Unit test | SIL3 |
 | REQ-RES-002 | result.rs | FailureReason covers 7 variants | Match exhaustiveness | SIL3 |
 | REQ-RES-003 | result.rs | .chars().take(n) not text[..n] | Unicode test | SIL2 |
-| REQ-CTX-001 | context.rs | AgentContext has max_steps, max_tokens, max_cost | Unit test | SIL2 |
+| REQ-CTX-001 | context.rs | AgentContext has max_steps (ported); max_tokens/max_cost (⚠️ NEW fields, not in Python original — see §2.3) | Unit test | SIL2 |
 | REQ-PORT-001 | port.rs | ModelPort trait with generate/generate_with_tools/count_tokens | Provider test | SIL2 |
 | REQ-PORT-002 | port.rs | ModelError covers 6 variants | Match exhaustiveness | SIL2 |
 | REQ-AGENT-001 | agent.rs | Agent trait with run/run_with_events | Smoke test | SIL3 |
@@ -84,6 +84,9 @@ PROVIDERS:   forge-gemini | forge-ollama | forge-openai | forge-mcp
 | REQ-SEC-001 | security.rs | Command::new().arg().output() NOT string parsing | Static analysis | SIL3 |
 | REQ-SEC-002 | security.rs | Path traversal blocked | Unit test | SIL3 |
 | REQ-SEC-003 | security.rs | NO_COLOR respected | Unit test | SIL1 |
+| REQ-SEC-004 | security.rs | Sensitive read/write path denylist (⚠️ NEW ID, added 2026-07-01 — real Python security.py has this, original playbook never named it) | Unit test per entry | SIL3 |
+| REQ-SEC-005 | security.rs | Network-egress command patterns blocked (curl/wget/nc/ssh/scp/etc.) (⚠️ NEW ID, same reason) | Unit test per pattern | SIL3 |
+| REQ-SEC-006 | security.rs | Untrusted text reaches a prompt ONLY via `.category`, never `.raw_text`/`.truncated_excerpt` (⚠️ NEW ID, same reason — see §2.6, this is the GH #25 fix) | Unit + type-level test | SIL3 |
 | REQ-TRC-001 | tracer.rs | Span with SpanKind, start/end timestamps | Unit test | SIL2 |
 | REQ-TRC-002 | tracer.rs | TraceId propagation across spans | Integration test | SIL2 |
 | REQ-AUD-001 | audit.rs | AuditEntry with hash chain | Unit test | SIL3 |
@@ -107,6 +110,7 @@ PROVIDERS:   forge-gemini | forge-ollama | forge-openai | forge-mcp
 | session.rs | Corrupted checkpoint | Data loss | Write crash | CRC + atomic write | SIL2 | Crash recovery |
 | guard.rs | Loop never breaks | Infinite or hung agent | Bug | Timeout watchdogs | SIL3 | Multiple break paths |
 | security.rs | Command injection | RCE | Shell parsing | Static analysis | SIL3 | Command::new().arg() |
+| security.rs | Untrusted text spliced into a prompt as free text | Prompt injection (this is the real GH #25 bug class, already fixed once in Python — see §2.6) | A sanitizer returns a plain String instead of a typed ContainmentResult, so a caller can compose the wrong field | Type-level: no free-text field reaches a prompt-construction call site | SIL3 | ContainmentResult typed boundary — category is the only field composable into a prompt |
 | audit.rs | Tampered entry | No detection | Hash collision | Chain integrity | SIL3 | SHA-256 chain |
 
 ---
@@ -239,6 +243,290 @@ impl FailureReason {
 - Unit test: causal_sentence() produces non-empty string for each
 - Property test: FailureReason never empty string (typed enum guarantee)
 - Unicode test: .chars().take(n) on multi-byte strings
+
+---
+
+### 2.2b step.rs — AgentStep
+
+**⚠️ Second gap found alongside AgentContext**: `step.rs` is one of the 5 `phase_0_types` files (per the Implementation Sequence below) and `AgentResult.steps: Vec<AgentStep>` (§2.2) depends on it, but — like `AgentContext` — it is never actually defined anywhere in this spec, only named in the file tree. Ground truth: `src/forge_sdk/agents/types.py::AgentStep` (real, verified, no gaps).
+
+**Implementation Contract:**
+
+```rust
+// Direct port of src/forge_sdk/agents/types.py::AgentStep.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStep {
+    pub step_number: u32,
+    pub thought: String,
+    pub action: String,              // tool name or "finish"
+    pub action_input: HashMap<String, serde_json::Value>,
+    pub observation: String,
+    pub is_final: bool,
+    pub loop_guard_triggered: bool,
+}
+```
+
+**Verification:** JSON round-trip test; unit test that `LoopGuard`-triggered steps set `loop_guard_triggered: true` (this is how a consumer distinguishes a normal finish from a forced stop — don't let it default to always-false).
+
+### 2.3 context.rs — AgentContext
+
+**Purpose:** the mutable state threaded through the agent loop — Agent::run(ctx), LoopGuard::new(ctx), and every ToolHandler call read from this.
+
+**⚠️ Gap found 2026-07-01 (Claude hardening pass), not in the original spec**: neither this playbook nor FORGE-RUST-TUI-SPEC.md ever actually DEFINES `AgentContext` — it's referenced 6 times (Agent trait, LoopGuard::new, Session.context) but never given a field list. Ground truth is `src/forge_sdk/agents/types.py::AgentContext` (real, verified): `task: str, cwd: str, max_steps: int, step_count: int, messages: list[dict], artifacts: dict`. **Also found: REQ-CTX-001 below (from the original playbook) claims AgentContext carries `max_tokens`/`max_cost` — false, those live on `ForgeConfig` (§2.7), not `AgentContext`, in the real Python.** Since `LoopGuard::new(ctx: &AgentContext)` (§6.1 of the master spec) genuinely needs a token/cost ceiling to check, this Rust port makes a deliberate, flagged EXTENSION beyond the straight Python port: add `max_tokens: Option<u64>` and `max_cost: Option<f64>` to `AgentContext`, populated from the same CLI flags (`--max-tokens`/`--max-cost`) that already exist in §9. This is not a port — it's a new field, added because the Rust LoopGuard design requires it and Python's `LoopGuard`-equivalent reads those limits from a different object. Flag it as such in code comments so a future reader doesn't assume it was ported.
+
+**Requirements:** REQ-CTX-001 (corrected: max_steps is ported; max_tokens/max_cost are a new, intentional extension, not a port)
+
+**Implementation Contract:**
+
+```rust
+// Ported from src/forge_sdk/agents/types.py::AgentContext, + 2 new fields
+// (max_tokens, max_cost) not present in the Python original — see gap note above.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentContext {
+    pub task: String,
+    pub cwd: PathBuf,
+    pub max_steps: u32,
+    pub step_count: u32,
+    pub messages: Vec<serde_json::Value>,     // Python: list[dict[str, Any]]
+    pub artifacts: HashMap<String, serde_json::Value>,
+    // NEW, not in Python AgentContext — populated from CLI --max-tokens/--max-cost
+    pub max_tokens: Option<u64>,
+    pub max_cost: Option<f64>,
+}
+```
+
+**Verification:** unit test round-trips through JSON; unit test confirms LoopGuard::new(&ctx) reads max_tokens/max_cost correctly when set and treats None as "no ceiling" (matches CLI flags being optional, §9).
+
+### 2.4 tracer.rs — Span, SpanKind, SpanStatus, Tracer
+
+**Purpose:** observability primitive. Every AgentEvent's Correlation.trace_id is produced/consumed here.
+
+**Ground truth**: direct, verified port of `src/forge_sdk/tracing/span.py` (real, complete — 4 types, no gaps).
+
+**Implementation Contract:**
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SpanKind { Llm, Tool, Agent, Internal }   // Python: SpanKind.LLM/TOOL/AGENT/INTERNAL
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SpanStatus { Ok, Error, Unset }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanEvent {
+    pub name: String,
+    pub timestamp_ms: i64,
+    pub attributes: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Span {
+    pub span_id: String,             // Python: uuid4().hex[:16]
+    pub trace_id: String,            // Python: uuid4().hex
+    pub parent_span_id: Option<String>,
+    pub name: String,
+    pub kind: SpanKind,
+    pub start_time_ms: i64,
+    pub end_time_ms: Option<i64>,
+    pub attributes: HashMap<String, serde_json::Value>,
+    pub events: Vec<SpanEvent>,
+    pub status: SpanStatus,
+}
+
+impl Span {
+    pub fn finish(&mut self, status: SpanStatus) { /* sets end_time_ms = now, self.status = status */ }
+    pub fn add_event(&mut self, name: &str, attributes: HashMap<String, serde_json::Value>) { /* push SpanEvent */ }
+    pub fn duration_ms(&self) -> Option<i64> { self.end_time_ms.map(|e| e - self.start_time_ms) }
+}
+
+pub struct Tracer {
+    spans: Vec<Span>,
+}
+```
+
+**Verification:** unit test `finish()` sets end_time+status; unit test `duration_ms()` returns None while running, Some after finish; JSON round-trip test matches Python's `to_dict()` field names/shape (`span_id`, `trace_id`, `parent_span_id`, `name`, `kind`, `start_time`, `status`, `attributes`, conditionally `end_time`/`duration_ms`/`events`) for CI/audit-consumer compatibility.
+
+### 2.5 audit.rs — AuditEntry, AuditLog, hash-chain integrity
+
+**Purpose:** SOC-PI-02's evidence ("Hash chain test") and REQ-AUD-001/002. This is the module that makes forge's audit trail tamper-evident — load-bearing for the "Confidentiality"/"Processing Integrity" claims in §3 of REFACTORED-PLAN-COMPLETE.md.
+
+**Ground truth**: direct, verified port of `src/forge_sdk/audit/__init__.py` (real, complete, SQLite-backed — 173 lines, no gaps). Interesting side-note for the merger design (see REFACTORED-PLAN-COMPLETE.md Part 8): this hash-chain design (`entry_hash = sha256(previous_hash + sorted-json(payload))`, genesis `"0"*64`) is structurally the same append-only hash-chain shape as lgwks's OWN `lgwks_cognition.py` (verified real in CLAUDE-REVIEW.md §7.3) — two independent, compatible implementations of the same pattern. Worth deciding later whether forge's audit chain and lgwks's cognition-log chain should ever be the SAME chain (shared trace_id linking them, per Part 8) rather than two parallel ones — not resolved here, flagged for the Director.
+
+**Implementation Contract:**
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub entry_id: String,           // Python: uuid4().hex[:16]
+    pub timestamp: f64,
+    pub trace_id: String,
+    pub entry_type: String,         // "llm_call" | "tool_use" | "decision" | "eval_result"
+    pub payload: serde_json::Value,
+    pub previous_hash: String,
+    pub entry_hash: String,
+}
+
+/// sha256(previous_hash + serde_json::to_string with SORTED keys of payload).
+/// MUST sort keys — Python uses json.dumps(payload, sort_keys=True); an
+/// unsorted Rust serialization would produce a different hash for
+/// semantically-identical payloads and silently break chain verification
+/// against any Python-written entries during the migration window.
+fn compute_hash(previous_hash: &str, payload: &serde_json::Value) -> String { /* ... */ }
+
+pub struct AuditLog {
+    conn: rusqlite::Connection,      // or a forge-core-appropriate SQLite binding — see H-note below
+}
+
+impl AuditLog {
+    pub fn open(db_path: &Path) -> Result<Self, SessionError> { /* CREATE TABLE IF NOT EXISTS audit_entries(...) + idx on trace_id, mirrors Python schema exactly */ }
+    fn last_hash(&self) -> String { /* SELECT entry_hash ORDER BY timestamp DESC LIMIT 1, else "0".repeat(64) */ }
+    pub fn append(&self, trace_id: &str, entry_type: &str, payload: serde_json::Value) -> Result<AuditEntry, SessionError> { /* ... */ }
+    pub fn verify_integrity(&self) -> Vec<String> { /* walk ASC, recompute each hash, collect violation strings — mirrors Python exactly, including message text, since tooling/tests may grep for it */ }
+    pub fn get_entries(&self, trace_id: Option<&str>, entry_type: Option<&str>, limit: u32) -> Vec<AuditEntry> { /* ... */ }
+    pub fn count(&self) -> u64 { /* ... */ }
+}
+```
+
+**⚠️ Dependency note**: this needs a SQLite binding (`rusqlite`) — not currently in forge-core's zero-heavy-dep list (async-trait/thiserror/serde/tokio/uuid). `rusqlite` is a real, mature, widely-used crate (already a dependency of the SIBLING `semantic-memory-brain` Rust port in this same project, per its Cargo.toml — so it's not a novel choice for this codebase). Flag for Director approval alongside `genai`/`reqwest` (CLAUDE-REVIEW.md §7.1) rather than assume it's pre-approved just because forge-core's dependency list didn't originally mention it.
+
+**Verification:** unit test hash-chain continuity (3 sequential appends, verify_integrity() returns empty); unit test tamper detection (mutate one stored payload directly in the DB, verify_integrity() flags it); unit test genesis hash is exactly 64 zero chars, matching Python.
+
+### 2.6 security.rs — path safety, command safety, untrusted-text containment
+
+**⚠️ Highest-priority gap found in this hardening pass.** The original spec's one-line treatment ("Shell fix + path safety") drastically understates this module. Ground truth is `src/forge_sdk/security.py` — 505 lines, a genuine 5-layer STRIDE/DREAD threat model (L1 Perimeter/path containment, L2 Network-egress blocking, L3 Host destructive-command blocking, L4 Application-layer untrusted-text containment, L5 Data sensitive-path allowlist), already carrying a **deliberate security redesign that fixed a real bug (GH issue #25)** — porting this from a one-line spec summary instead of the real file would very likely regress that fix. This module should NOT be assigned to whichever agent draws the short straw on "security.rs" without reading the real source first — treat that as a hard requirement, not a suggestion.
+
+**Requirements:** REQ-SEC-001 (Command::new().arg().output()), REQ-SEC-002 (path traversal blocked), REQ-SEC-003 (NO_COLOR) — plus 3 NEW requirements this hardening pass adds because the real module does far more than those three cover: REQ-SEC-004 (sensitive-path denylist, L5), REQ-SEC-005 (network-egress command blocking, L2), REQ-SEC-006 (typed untrusted-text containment, L4).
+
+**Implementation Contract (abbreviated — port the real file's logic, not this sketch):**
+
+```rust
+// L5 — ported from SENSITIVE_READ_PATHS / SENSITIVE_WRITE_PATHS (security.py).
+// Keep these as literal const arrays, same entries, same read/write split.
+const SENSITIVE_READ_PATHS: &[&str] = &["/etc/passwd", "/etc/shadow", ".ssh/", ".aws/", ".env", "id_rsa", /* ...full list, ~29 entries, port verbatim */];
+const SENSITIVE_WRITE_PATHS: &[&str] = &["/etc/", "/usr/", ".ssh/", ".git/hooks/", /* ...full list, port verbatim */];
+// Also port AGENT_CLI_CONFIG_DIRS + the credential-filename regex-equivalent
+// (word/substring match, NOT the `regex` crate — same zero-new-heavy-dep
+// discipline used in the sibling semantic-memory-brain port's evidence.rs).
+
+pub enum PathSafetyError { Sensitive(String), OutsideSandbox(String), SymlinkEscape(String) }
+
+/// L1 + L5. Ported from _check_path_safety(). MUST preserve: sandbox
+/// containment via canonicalize+relative_to-equivalent, symlink-escape
+/// detection, and the /tmp + platform-tempdir carve-out (issue #17 in the
+/// Python source — an agent needs to read back its own scratch writes even
+/// under an active sandbox).
+pub fn check_path_safety(path: &Path, cwd: &Path, sandbox_dir: Option<&Path>, check_writes: bool) -> Result<(), PathSafetyError> { /* ... */ }
+
+/// L2 + L3 + L5. Ported from _check_command_safety(). MUST preserve: the
+/// dangerous-command pattern set (rm -rf variants, dd/mkfs, fork bomb, kill
+/// 1, shutdown/reboot/halt), the network-egress command set (curl/wget/nc/
+/// ssh/scp/rsync/telnet/ftp), the interpreter arbitrary-exec block (python3
+/// -c / ruby -e / perl -e), and running resolved path tokens back through
+/// check_path_safety (not a second, weaker, separate check).
+pub fn check_command_safety(command: &str, cwd: &Path) -> Result<(), String> { /* ... */ }
+
+/// L4. Ported from ContainmentResult / contain_untrusted_text() — the
+/// CANONICAL way any untrusted text (tool output, file content, web
+/// content) is allowed to reach a prompt. This is the single most
+/// important design detail to preserve: callers compose ONLY `.category`
+/// (a closed enum/string) into a prompt-construction surface — NEVER
+/// `.raw_text`/`.truncated_excerpt`, which are for logs/CLI display only.
+/// Python's docstring explains why: a string-returning sanitizer can be
+/// spliced back into a free-text slot, which is exactly how GH #25
+/// happened. Do not "simplify" this back into a function returning a
+/// plain String — that would silently reintroduce the fixed bug class.
+pub struct ContainmentResult {
+    pub category: String,
+    pub risk_score: f64,
+    pub quarantined: bool,
+    pub raw_text: String,           // logs/CLI only — never composed into a prompt
+    pub truncated_excerpt: String,  // logs/CLI only — never composed into a prompt
+}
+pub fn contain_untrusted_text(text: &str, max_excerpt: usize, category: &str) -> ContainmentResult { /* ... */ }
+```
+
+**Verification:** every SENSITIVE_READ/WRITE_PATHS entry gets a unit test (both list lengths — don't silently drop entries during port); command-safety unit tests for each dangerous/network pattern class; a symlink-escape integration test (create a symlink pointing outside a sandbox, confirm denial); a ContainmentResult test confirming a caller cannot accidentally get `raw_text` where `category` was expected (type-level, not just a docstring warning — consider a newtype wrapper around the prompt-safe fields if Rust's type system can enforce the "never compose raw_text" rule better than Python's could).
+
+### 2.7 config.rs — ForgeConfig (H16 fix)
+
+**Purpose:** closes FORGE_FEEDBACK.md's documented H16 gap — real config plumbing exists in Python (`ForgeConfig.load()`/env-var overrides) but zero CLI surface (`forge --help` has no `config` subcommand) ever calls `.save()`. This Rust port must ship the CLI surface, not just the struct.
+
+**Ground truth**: `src/forge_sdk/config/__init__.py::ForgeConfig` (real, complete dataclass + `load()`).
+
+**Implementation Contract:**
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgeConfig {
+    pub provider: String,           // default "deepseek" in Python — reconsider default for this project (project-laws L1 names zai/ollama-cloud as the approved lane; carrying Python's "deepseek" default forward unexamined would be a silent policy drift)
+    pub model: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub temperature: f64,
+    pub max_tokens: Option<u64>,
+    pub max_steps: u32,             // default 50, matches AgentContext.max_steps default
+    pub cwd: PathBuf,
+    pub eval_limit: Option<u32>,
+    pub eval_benchmark: String,
+    pub trace_dir: PathBuf,
+    pub audit_db: PathBuf,
+    pub config_file: Option<PathBuf>,
+}
+
+impl ForgeConfig {
+    /// Load from ~/.forge/config.json (or an explicit path), then apply env
+    /// overrides. MUST preserve the Python source's own hard-won lesson
+    /// (see its inline comment): FORGE_API_KEY is the ONLY generic API-key
+    /// env override — do NOT map provider-specific keys (DEEPSEEK_API_KEY,
+    /// OPENROUTER_API_KEY, etc.) to the same `api_key` field here, or
+    /// whichever env var is read last silently clobbers the other (the
+    /// exact bug the Python comment documents: "a stale OPENROUTER_API_KEY
+    /// -> 401 against deepseek"). Provider-aware key resolution stays a
+    /// separate, later step (resolve_api_key()-equivalent in forge-providers).
+    pub fn load(config_file: Option<&Path>) -> Result<Self, SessionError> { /* ... */ }
+    pub fn save(&self, path: &Path) -> Result<(), SessionError> { /* the method Python has but nothing ever calls — THIS gap is what H16 fixes */ }
+}
+```
+
+CLI surface (already declared in FORGE-RUST-TUI-SPEC.md §9's `ConfigAction` enum — `Init | Show | Set { key, value }` — just needs real handlers wired to `ForgeConfig::load`/`save` in `forge-cli/src/commands/config.rs`; no new design needed here, the gap was purely "nobody wired the button").
+
+**Verification:** unit test env-override precedence (file value present, env var present → env wins, matches Python); regression test confirming a provider-specific key env var (e.g. a hypothetical `OPENROUTER_API_KEY`) does NOT get mapped onto `.api_key` by this module (guards the exact clobbering bug the Python comment warns about); CLI integration test: `forge config init` creates the file, `forge config show` reads it back, `forge config set key value` persists.
+
+### 2.8 router.rs — AutoRouter (NEW code — no Python precedent, do not imply one exists)
+
+**⚠️ Unlike every other module in this section, there is no real Python file to port.** FORGE_FEEDBACK.md's own 2026-07-01 "no automatic free-model routing/fallback" entry documents this as a live, real, currently-unsolved gap in the shipped Python SDK — "None of this exists today — it's fully manual." Any spec/agent output that frames router.rs as a "port" is wrong; it's new design, grounded in real observed failure data.
+
+**Ground truth for the failure modes this must handle** (all independently confirmed live during this project's own dispatch history, per FORGE_FEEDBACK.md): (a) HTTP 429 with a real, server-provided `retry_after_seconds` — a genuine bounded backoff, not an account block; (b) HTTP 404 from a free model, plausibly OpenRouter Zero-Data-Retention policy filtering (Director's diagnosis, not independently confirmed at the API level — flag it as such in code comments too); (c) both failure modes are currently indistinguishable to a caller without manual iteration through a model list.
+
+**Implementation Contract:**
+
+```rust
+pub struct AutoRouter {
+    candidates: Vec<String>,        // ordered model-id fallback list for a request
+    dead_this_session: HashSet<String>,  // models that 404'd — don't retry them this run
+}
+
+#[derive(Debug, Clone)]
+pub enum RouteFailure {
+    RateLimited { retry_after_seconds: u64 },   // honor this exact backoff once, per FORGE_FEEDBACK.md (b)
+    NotFound,                                    // drop from candidate list for the session, try next
+    Other(ModelError),
+}
+
+impl AutoRouter {
+    pub async fn dispatch(&mut self, prompt: &str, tools: &[ToolSpec]) -> Result<(ModelResponse, String /* model actually used */), FailureReason> {
+        // (a) on RateLimited: sleep retry_after_seconds once, retry same model once, then fall through
+        // (b) on NotFound: mark dead_this_session, try next candidate immediately, no retry
+        // (c) ALWAYS surface which model actually served the response (FORGE_FEEDBACK.md gap (d):
+        //     "surfaces which model actually ran... isn't guessing") — this is a real, named
+        //     requirement, not an implementation detail to skip
+    }
+}
+```
+
+**Language-cost-aware extension (see REFACTORED-PLAN-COMPLETE.md Part 10, added same hardening pass)**: `AutoRouter`'s candidate ordering should additionally consult `forge-catalog`'s models.dev data + this project's own audit-log-derived tokens-per-`(model, detected_language)` history, preferring the empirically cheapest capable model for non-English-heavy requests — not just the first model in a static list. Same struct, one more input signal; not a separate module.
+
+**Verification:** unit test each `RouteFailure` variant is handled per (a)/(b)/(c) above; integration test against a mock provider that returns 429-with-retry-after then succeeds; integration test confirming a `NotFound` model is never retried twice in one session; unit test that the final result always carries the actually-used model string, never leaves it implicit.
 
 ---
 

@@ -1,10 +1,11 @@
 # Forge Rust Port — TUI & Full Implementation Specification
 
-**Version:** 1.0.0 (Rust)
+**Version:** 1.0.1 (Rust) — dependency line corrected 2026-07-01 (Claude review, see CLAUDE-REVIEW.md §7.1)
 **Python Baseline:** forge-sdk v0.7.0
-**Rust SDK Foundation:** google-genai-rs v0.3.0, keel-core, MCP rust-sdk v1.7.0
+**Rust SDK Foundation:** `genai` v0.6.x (jeremychone/rust-genai — unified Gemini/Vertex/Anthropic/OpenAI/Ollama/Ollama-Cloud/OpenRouter/ZAI-GLM client), `keel-core` v0.4.2, `mcp_rust_sdk` v0.1.1
+**⚠️ CORRECTED:** the original line named `google-genai-rs v0.3.0` (does not exist on crates.io — verified) and `MCP rust-sdk v1.7.0` (real crate is `mcp_rust_sdk`, max published version `0.1.1`, not `1.7.0`). `genai` additionally lets §2 §13 collapse `forge-gemini`/`forge-ollama`/`forge-openai` into one `forge-providers` crate — see CLAUDE-REVIEW.md §7.1 and §7.8 for the full rationale and the resulting 6-crate v1 recommendation.
 **Palette (spine-based TUI):** Slate `#2c2c2c` / Cream `#f5f0e0` / Emerald `#50c878` / Amber `#ffbf00` / Ruby `#e0115f`
-**Status:** ✅ FINALIZED — ready for Phase 1-6 execution
+**Status:** 🔄 SPEC DRAFT UNDER HARDENING — see CLAUDE-REVIEW.md §7.0: zero Rust code exists yet, prior "IN FLIGHT"/"SPAWNED" status markers in this doc and its siblings were aspirational, not observed
 
 ---
 
@@ -56,20 +57,32 @@ forge/
 │       ├── audit.rs               # AuditEntry, AuditLog, EventSink trait
 │       └── security.rs            # Path safety, command safety, credential store detection
 │
-├── forge-gemini/                  # google-genai-rs -> ModelPort impl
-│   ├── Cargo.toml                 # dep: google-genai-rs, forge-core
+├── forge-providers/                 # ⚠️ CORRECTED 2026-07-01, REVISED same day per Director
+│   │                                 # feedback: NOT a single-crate genai lock-in. Three-tier
+│   │                                 # design, each independently swappable behind ModelPort:
+│   │                                 #  (a) forge-vertex (PREFERRED) — plain REST + gcloud ADC,
+│   │                                 #      zero new crate beyond reqwest (already planned). Talks
+│   │                                 #      to Vertex AI Model Garden's ONE endpoint/auth, which
+│   │                                 #      hosts Gemini + Claude/Anthropic-on-Vertex + Llama +
+│   │                                 #      Mistral + 600-4000+ HF models — already Canada-region-
+│   │                                 #      bound & billed under this project's existing GCP setup.
+│   │                                 #  (b) forge-catalog — thin free-JSON client for models.dev's
+│   │                                 #      public API (models.json/api.json/catalog.json, $0,
+│   │                                 #      no auth) for PROVIDER-AGNOSTIC metadata (pricing,
+│   │                                 #      context window, capabilities) across ~every provider —
+│   │                                 #      this is the "models.dev-level access" requirement.
+│   │                                 #      Feeds router.rs's model-selection (see Part 10 of
+│   │                                 #      REFACTORED-PLAN-COMPLETE.md).
+│   │                                 #  (c) genai crate (fallback) — for the providers Vertex
+│   │                                 #      doesn't host: ZAI/GLM (this project's actual credit
+│   │                                 #      lane today), Ollama local/cloud, OpenRouter. Kept as
+│   │                                 #      "preferred support for credits," not the sole/default
+│   │                                 #      path. See CLAUDE-REVIEW.md §7.1.
+│   ├── Cargo.toml                  # dep: reqwest (vertex+catalog), genai v0.6.x (fallback), forge-core
 │   └── src/
-│       └── lib.rs
-│
-├── forge-ollama/                  # reqwest REST -> ModelPort impl
-│   ├── Cargo.toml                 # dep: reqwest, forge-core
-│   └── src/
-│       └── lib.rs
-│
-├── forge-openai/                  # reqwest REST -> ModelPort impl
-│   ├── Cargo.toml                 # dep: reqwest, forge-core
-│   └── src/
-│       └── lib.rs
+│       ├── vertex.rs               # ModelPort impl -> Vertex Model Garden REST, ADC auth
+│       ├── catalog.rs              # models.dev client -> pricing/capability lookup for router.rs
+│       └── fallback.rs             # ModelPort impl wrapping genai::Client for non-Vertex providers
 │
 ├── forge-cli/                     # clap binary: run, doctor, session, eval, audit
 │   ├── Cargo.toml                 # dep: forge-core, clap, tokio, tracing, syntect
@@ -120,12 +133,10 @@ forge/
 ```
 forge-core ─────────────────────────────────────► (no external deps beyond async-trait + thiserror + serde + tokio)
   │
-  ├─ forge-gemini ──── dep: forge-core, google-genai-rs
-  ├─ forge-ollama ──── dep: forge-core, reqwest
-  ├─ forge-openai ──── dep: forge-core, reqwest
+  ├─ forge-providers ── dep: forge-core, genai v0.6.x (replaces forge-gemini/forge-ollama/forge-openai)
   ├─ forge-cli ─────── dep: forge-core, forge-tui (optional), clap, tokio, tracing, syntect
   ├─ forge-tui ─────── dep: forge-core, crossterm, ratatui
-  ├─ forge-mcp ─────── dep: forge-core, mcp-rust-sdk
+  ├─ forge-mcp ─────── dep: forge-core, mcp_rust_sdk v0.1.1 (⚠️ early-stage: 2 releases, ~5k downloads — re-check maturity before committing)
   └─ forge-harness ── dep: forge-core, serde_yaml
 ```
 
@@ -655,6 +666,11 @@ impl PermissionGate {
 
 
 ## 5. forge-core: Five-Gate Verification Pipeline
+
+**⚠️ Gap found 2026-07-01 (Claude hardening pass):** two problems, both unresolved, both should be closed before Phase 2 implementation starts.
+
+1. **`VerificationContext` (used by `VerificationGate::verify(&self, ctx: &VerificationContext)` and `VerifierPipeline::run_all`) is referenced but never defined anywhere in this spec** — same class of gap as `AgentContext`/`AgentStep` (now fixed, IMPLEMENTATION_PLAYBOOK.md §2.3/§2.2b). Ground truth for what it needs to carry: the real Python `Verifier` (`src/forge_sdk/verifiers/__init__.py`) needs, across its gates, at minimum the edited file path(s)/content, a diff or edit description, the originating task/spec description (for `spec_conformance_check`), and `ModelPort` access (`SemanticCheck` — INV-203/207 — uses a DISTINCT model instance to grade the code, deliberately not the model that wrote it). `VerificationContext` should carry all of these; exact field list not yet specced — do this before Phase 2.
+2. **The "5 gates" below (SyntaxCheck/LintAnalysis/TestExecution/PropertyCheck/FormalBound) do NOT match the real Python verifier's actual gates.** Checked `src/forge_sdk/verifiers/__init__.py` directly: the real, live `VerificationConfig.enabled_gates` default is 4 named gates — `syntactic`, `ast_parse`, `entity_validation`, `shell_dry_run` — plus two more real mechanisms elsewhere in the same file: `spec_conformance_check()` (a function) and `SemanticCheck` (a class using a distinct `ModelPort` to grade the edit, per INV-203/207 — "the model that writes code does NOT grade it"). That's **6 real gate concepts, different names, different count** from the 5 claimed below. `PropertyCheck` (proptest) and `FormalBound` (Lean) have **no Python precedent at all** — like `router.rs` (IMPLEMENTATION_PLAYBOOK.md §2.8), they are new, aspirational gates being introduced without being labeled as new. Before Phase 2: either (a) rename/remap the 5 Rust gates to honestly reflect the real 6, keeping `PropertyCheck`/`FormalBound` but explicitly flagged `NEW — no Python precedent` the way `router.rs` now is, or (b) get an explicit decision that this is an intentional redesign, not a port, and document it as such. Don't let an implementer discover this mismatch mid-Phase-2 by diffing against the real source themselves.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
