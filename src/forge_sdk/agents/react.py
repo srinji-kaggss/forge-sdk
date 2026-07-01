@@ -601,6 +601,18 @@ class ReactAgent:
         First successful strategy wins. Debug logging traces which strategy matched.
         """
         content = content.strip()
+        if not content:
+            # Real bug: an empty response (e.g. Gemini's own function-calling
+            # decoder returning finishReason=MALFORMED_FUNCTION_CALL with no
+            # usable parts at all, most often triggered by a large string
+            # argument like a whole-file write_file content) has no braces
+            # for any strategy to even attempt, so this used to fall through
+            # to the bottom "finish" fallback below -- silently ending the
+            # task with a blank output instead of surfacing the failure.
+            # Treat empty exactly like a malformed response: retry, don't
+            # report false completion.
+            log.debug("PARSE: empty content, not a valid finish")
+            return {"thought": "", "action": "__parse_failed__", "action_input": {"output": ""}}
         attempted = False
         for strategy in _PARSE_STRATEGIES:
             if strategy.applies(content):
