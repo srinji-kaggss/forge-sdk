@@ -6,6 +6,7 @@ Sensitive paths (dotfiles, credentials) blocked on both read and write.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 from pathlib import Path
@@ -84,6 +85,24 @@ async def _read_file(path: str) -> ToolResult:
         return ToolResult(success=False, output="", error=str(e))
 
 
+def _python_syntax_error(path: str, content: str) -> str | None:
+    """Real bug, found dogfooding: a model rewrote a whole .py file to
+    remove one EXCLUDED-list entry, and in the same edit replaced two
+    unrelated `\\n` escape sequences inside string literals with actual
+    newline characters -- syntactically invalid Python, silently written
+    to disk and only discovered later via a downstream pytest collection
+    error. Catch it before it hits disk so the same agent run can see the
+    exact error and self-correct, instead of leaving broken code behind.
+    """
+    if not path.endswith(".py"):
+        return None
+    try:
+        ast.parse(content)
+    except SyntaxError as exc:
+        return f"line {exc.lineno}, column {exc.offset}: {exc.msg}"
+    return None
+
+
 async def _write_file(path: str, content: str, force: bool = False) -> ToolResult:
     try:
         # L1+L5: Security check — write path safety
@@ -94,6 +113,20 @@ async def _write_file(path: str, content: str, force: bool = False) -> ToolResul
             )
 
         p = Path(path).expanduser().resolve()
+
+        syntax_error = _python_syntax_error(path, content)
+        if syntax_error and not force:
+            return ToolResult(
+                success=False,
+                output="",
+                error=(
+                    f"Refused: content is not syntactically valid Python "
+                    f"({syntax_error}). Fix the syntax error before writing, "
+                    f"or pass force=true if this is genuinely intended "
+                    f"(e.g. a deliberately incomplete work-in-progress file)."
+                ),
+                metadata={"path": str(p), "blocked": True, "reason": "invalid_python_syntax"},
+            )
 
         elision_match = _ELISION_MARKERS.search(content)
         if elision_match and not force:
