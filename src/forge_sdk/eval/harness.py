@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -77,9 +78,9 @@ class CodeExtractor:
     """Strategy-based code extraction. Registered as a policy, not hardcoded."""
 
     def __init__(self) -> None:
-        self._strategies: list[tuple[str, callable]] = []
+        self._strategies: list[tuple[str, Callable[..., Any]]] = []
 
-    def register(self, name: str, extractor: callable) -> None:
+    def register(self, name: str, extractor: Callable[..., Any]) -> None:
         self._strategies.append((name, extractor))
 
     def extract(self, response: str, entry_point: str) -> str:
@@ -256,9 +257,9 @@ class EvalHarness:
         try:
             from datasets import load_dataset
 
-            ds = load_dataset("openai/openai_humaneval", split=split)
-            problems = []
-            for row in ds:
+            ds: Any = load_dataset("openai/openai_humaneval", split=split)
+            problems: list[EvalProblem] = []
+            for row in ds:  # type: ignore[reportUnknownVariableType]
                 problems.append(
                     EvalProblem(
                         task_id=row["task_id"],
@@ -277,9 +278,9 @@ class EvalHarness:
         try:
             from datasets import load_dataset
 
-            ds = load_dataset("google-research-datasets/mbpp", split=split)
-            problems = []
-            for row in ds:
+            ds: Any = load_dataset("google-research-datasets/mbpp", split=split)
+            problems: list[EvalProblem] = []
+            for row in ds:  # type: ignore[reportUnknownVariableType]
                 problems.append(
                     EvalProblem(
                         task_id=f"MBPP_{row['task_id']}",

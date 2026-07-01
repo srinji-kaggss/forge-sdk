@@ -17,18 +17,22 @@ AI-native design:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from forge_sdk.agents import events as _events
 from forge_sdk.agents.types import AgentContext, AgentResult, AgentStep
+from forge_sdk.cli.session import SessionState, checkpoint_save
 from forge_sdk.text_tokens import FILE_PATH_TOKEN, is_real_file_token
 from forge_sdk.verifiers import SemanticCheck as _SemanticCheck
 from forge_sdk.verifiers import VerificationEvidence, VerificationStatus
@@ -527,6 +531,9 @@ class ReactAgent:
         auto_verify: bool = True,
         verify_timeout_seconds: float = 120.0,
         semantic_check: _SemanticCheck | None = None,
+        event_callback: Callable[[Any], None] | None = None,
+        permission_gate: Any = None,
+        session_id: str = "",
     ) -> None:
         self._model = model
         self._tools = tools
@@ -548,6 +555,33 @@ class ReactAgent:
         self._verify_command = verify_command
         self._auto_verify = auto_verify
         self._verify_timeout_seconds = verify_timeout_seconds
+        # ADR-2: The event callback is injected by the CLI layer; the SDK
+        # never knows about renderers, ANSI codes, or output formats.
+        self._event_cb = event_callback
+        # Phase 4 (L5a): Permission gate — injected by CLI, SDK stores reference
+        self._permission_gate = permission_gate
+        # Phase 5 (L5b): Session recovery — set to uuid4 if not provided
+        self._session_id = session_id or str(uuid.uuid4())
+
+    def _emit(self, event: Any) -> None:
+        """Fire-and-forget: call the event callback if set.
+
+        Callback exceptions are swallowed silently so a broken renderer
+        never destabilises the agent loop (ADR-3 compliance).
+        """
+        if self._event_cb is None:
+            return
+        with contextlib.suppress(Exception):
+            self._event_cb(event)
+
+    def _make_correlation(self, metrics: Any) -> dict:
+        """H14: correlation keys for every event — trace_id, run_id, model, provider."""
+        return {
+            "trace_id": self._tracer.trace_id if self._tracer else "",
+            "run_id": metrics.run_id,
+            "model": metrics.model,
+            "provider": metrics.provider,
+        }
 
     def _build_system_prompt(self) -> str:
         """AI-native system prompt with full tool schemas."""
@@ -985,6 +1019,18 @@ class ReactAgent:
         steps: list[AgentStep] = []
         all_edits: list[str] = []
 
+        # ADR-1: emit RunStartEvent so every renderer knows the run has begun
+        self._emit(
+            _events.RunStartEvent(
+                task=context.task,
+                model=metrics.model,
+                provider=metrics.provider,
+                run_id=metrics.run_id,
+                correlation=self._make_correlation(metrics),
+                timestamp_ms=_events.now_ms(),
+            )
+        )
+
         # Convergence tracking: detect stalled agents
         steps_since_edit = 0
         max_steps_without_edit = 5  # Nudge after 5 steps with no file changes
@@ -1005,7 +1051,36 @@ class ReactAgent:
                     log.warning(
                         "Convergence: %d nudges ignored, force-finishing", convergence_nudges - 1
                     )
-                    break
+                    trace.failure_reason = (
+                        f"convergence_failure: {convergence_nudges - 1} nudges ignored"
+                    )
+                    trace.total_duration_ms = (time.monotonic() - run_start) * 1000
+                    trace.total_tokens = metrics.total_tokens
+                    trace.total_cost_usd = metrics.total_cost_usd
+                    metrics.total_steps = step_num
+                    metrics.duration_ms = trace.total_duration_ms
+                    log.warning("agent.run.convergence_failure", extra=metrics.to_dict())
+                    # ADR-3: emit error event BEFORE returning so the human
+                    # never gets a lie about why the run stopped.
+                    self._emit(
+                        _events.RunErrorEvent(
+                            step=step_num,
+                            error=f"convergence_failure: {convergence_nudges - 1} nudges ignored",
+                            error_type="convergence",
+                            correlation=self._make_correlation(metrics),
+                            timestamp_ms=_events.now_ms(),
+                        )
+                    )
+                    return AgentResult(
+                        success=False,
+                        output=f"Convergence failure: agent ignored prompts to finish after {convergence_nudges - 1} nudge(s).",
+                        steps=steps,
+                        trace_id=self._tracer.trace_id if self._tracer else "",
+                        total_tokens=metrics.total_tokens,
+                        total_cost_usd=metrics.total_cost_usd,
+                        edits_made=all_edits,
+                        failure_reason=trace.failure_reason,
+                    )
                 log.warning(
                     "Convergence: %d steps without edit, nudging (nudge %d/%d)",
                     steps_since_edit,
@@ -1043,14 +1118,64 @@ class ReactAgent:
             # Check usage limits
             if self._limiter.check():
                 log.warning("Usage limit exceeded at step %d", step_num)
-                break
+                trace.failure_reason = "usage_limit_exceeded"
+                trace.total_duration_ms = (time.monotonic() - run_start) * 1000
+                trace.total_tokens = metrics.total_tokens
+                trace.total_cost_usd = metrics.total_cost_usd
+                metrics.total_steps = step_num
+                metrics.duration_ms = trace.total_duration_ms
+                log.warning("agent.run.usage_limit", extra=metrics.to_dict())
+                self._emit(
+                    _events.RunErrorEvent(
+                        step=step_num,
+                        error="Usage limit exceeded (token or cost cap reached).",
+                        error_type="usage_limit",
+                        correlation=self._make_correlation(metrics),
+                        timestamp_ms=_events.now_ms(),
+                    )
+                )
+                return AgentResult(
+                    success=False,
+                    output="Usage limit exceeded (token or cost cap reached).",
+                    steps=steps,
+                    trace_id=self._tracer.trace_id if self._tracer else "",
+                    total_tokens=metrics.total_tokens,
+                    total_cost_usd=metrics.total_cost_usd,
+                    edits_made=all_edits,
+                    failure_reason=trace.failure_reason,
+                )
 
             # Call model with retry
             try:
                 response = await self._call_model_with_retry(messages, tools=self._tool_schemas())
             except Exception as e:
                 log.error("Model call failed after retries: %s", e)
-                break
+                trace.failure_reason = f"model_error: {str(e)}"
+                trace.total_duration_ms = (time.monotonic() - run_start) * 1000
+                trace.total_tokens = metrics.total_tokens
+                trace.total_cost_usd = metrics.total_cost_usd
+                metrics.total_steps = step_num
+                metrics.duration_ms = trace.total_duration_ms
+                log.warning("agent.run.model_error", extra=metrics.to_dict())
+                self._emit(
+                    _events.RunErrorEvent(
+                        step=step_num,
+                        error=f"Model call failed: {e}",
+                        error_type="model_error",
+                        correlation=self._make_correlation(metrics),
+                        timestamp_ms=_events.now_ms(),
+                    )
+                )
+                return AgentResult(
+                    success=False,
+                    output=f"Model call failed: {e}",
+                    steps=steps,
+                    trace_id=self._tracer.trace_id if self._tracer else "",
+                    total_tokens=metrics.total_tokens,
+                    total_cost_usd=metrics.total_cost_usd,
+                    edits_made=all_edits,
+                    failure_reason=trace.failure_reason,
+                )
 
             response = replace(
                 response, content=response.content or ""
@@ -1063,6 +1188,23 @@ class ReactAgent:
                 metrics.prompt_tokens += usage.prompt_tokens
                 metrics.completion_tokens += usage.completion_tokens
                 metrics.total_tokens += usage.total_tokens
+
+            # ADR-1: emit TokenUsageEvent when usage data is available
+            if hasattr(response, "usage"):
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    cost = getattr(response, "cost", None)
+                    self._emit(
+                        _events.TokenUsageEvent(
+                            step=step_num,
+                            prompt_tokens=getattr(usage, "prompt_tokens", 0),
+                            completion_tokens=getattr(usage, "completion_tokens", 0),
+                            total_tokens=getattr(usage, "total_tokens", 0),
+                            cost_usd=getattr(cost, "total_cost", 0.0) if cost else 0.0,
+                            correlation=self._make_correlation(metrics),
+                            timestamp_ms=_events.now_ms(),
+                        )
+                    )
 
             # TRACER: emit LLM call span
             if self._tracer:
@@ -1140,6 +1282,16 @@ class ReactAgent:
                 continue
             parse_failures = 0
 
+            # ADR-1: emit ThoughtEvent
+            self._emit(
+                _events.ThoughtEvent(
+                    step=step_num,
+                    content=thought,
+                    correlation=self._make_correlation(metrics),
+                    timestamp_ms=_events.now_ms(),
+                )
+            )
+
             # Execute tool if not finish
             observation = ""
             is_final = action == "finish"
@@ -1149,7 +1301,19 @@ class ReactAgent:
             if not is_final:
                 metrics.tool_calls += 1
 
+                # ADR-1: emit ActionEvent
+                self._emit(
+                    _events.ActionEvent(
+                        step=step_num,
+                        tool=action,
+                        tool_input=action_input,
+                        correlation=self._make_correlation(metrics),
+                        timestamp_ms=_events.now_ms(),
+                    )
+                )
+
                 # Sandbox check
+                sandbox_error: str | None = None
                 sandbox_error = self._check_sandbox(action, action_input)
                 if sandbox_error:
                     observation = sandbox_error
@@ -1197,6 +1361,19 @@ class ReactAgent:
                         },
                     )
 
+            # ADR-1: emit ObservationEvent after tool returns
+            if not is_final:
+                self._emit(
+                    _events.ObservationEvent(
+                        step=step_num,
+                        content=observation[:500],
+                        tool=action,
+                        is_error=observation.startswith("Error") if observation else False,
+                        correlation=self._make_correlation(metrics),
+                        timestamp_ms=_events.now_ms(),
+                    )
+                )
+
             step_duration = (time.monotonic() - step_start) * 1000
 
             # Convergence: track steps since last edit
@@ -1235,9 +1412,20 @@ class ReactAgent:
 
             # Track file edits
             if not is_final and not loop_guard_triggered and not sandbox_error:
-                all_edits.extend(
-                    self._extract_edits_from_observation(action, action_input, observation)
-                )
+                new_edits = self._extract_edits_from_observation(action, action_input, observation)
+                all_edits.extend(new_edits)
+                # ADR-1: emit FileEditEvent for each file modified
+                for edit_path in new_edits:
+                    self._emit(
+                        _events.FileEditEvent(
+                            step=step_num,
+                            path=edit_path,
+                            action="modify",  # best-effort: observation doesn't distinguish create/delete
+                            diff="",
+                            correlation=self._make_correlation(metrics),
+                            timestamp_ms=_events.now_ms(),
+                        )
+                    )
 
             # Add to messages for next iteration. Native tool calls leave
             # response.content empty (the provider put everything in
@@ -1297,7 +1485,20 @@ class ReactAgent:
                         verify_cmd = self._detect_verify_command(context.cwd, all_edits)
                     if verify_cmd:
                         build_gate_ran = True
-                        verification.append(await self._run_verify_command(verify_cmd, context.cwd))
+                        v = await self._run_verify_command(verify_cmd, context.cwd)
+                        verification.append(v)
+                        # ADR-1: emit VerificationEvent for each gate result
+                        self._emit(
+                            _events.VerificationEvent(
+                                step=step_num,
+                                gate_name="build_verify",
+                                status=v.status.value,
+                                evidence_type="total_correctness",
+                                detail=getattr(v, "evidence", ""),
+                                correlation=self._make_correlation(metrics),
+                                timestamp_ms=_events.now_ms(),
+                            )
+                        )
 
                 # INV-207: semantic alignment check — catches shallow edits
                 semantic_evidence = self._run_semantic_gate(
@@ -1370,6 +1571,69 @@ class ReactAgent:
 
                 log.info("agent.run.complete", extra=metrics.to_dict())
 
+                # ADR-1: emit VerificationEvents for non-build gates
+                if semantic_evidence is not None:
+                    self._emit(
+                        _events.VerificationEvent(
+                            step=step_num,
+                            gate_name="semantic_alignment",
+                            status=semantic_evidence.status.value,
+                            evidence_type="falsifiability",
+                            detail=getattr(semantic_evidence, "evidence", ""),
+                            correlation=self._make_correlation(metrics),
+                            timestamp_ms=_events.now_ms(),
+                        )
+                    )
+                self._emit(
+                    _events.VerificationEvent(
+                        step=step_num,
+                        gate_name="spec_conformance",
+                        status=spec_evidence.status.value,
+                        evidence_type="invariant_preservation",
+                        detail=getattr(spec_evidence, "evidence", ""),
+                        correlation=self._make_correlation(metrics),
+                        timestamp_ms=_events.now_ms(),
+                    )
+                )
+
+                # H15: build change manifest for CI/CD gate pipeline
+                change_manifest = {
+                    "intent": context.task,
+                    "blast_radius": {"files": all_edits},
+                    "rollback": "git checkout" if all_edits else "none",
+                    "residual_unknowns": named_targets_missing,
+                }
+
+                # ADR-1: emit RunEndEvent before final return
+                self._emit(
+                    _events.RunEndEvent(
+                        step=step_num,
+                        success=success,
+                        failure_reason=failure_reason,
+                        total_steps=metrics.total_steps,
+                        total_tokens=metrics.total_tokens,
+                        total_cost_usd=metrics.total_cost_usd,
+                        edits_made=list(all_edits),
+                        correlation=self._make_correlation(metrics),
+                        change_manifest=change_manifest,
+                        timestamp_ms=_events.now_ms(),
+                    )
+                )
+
+                # Phase 5 (L5b): save session checkpoint
+                state = SessionState(
+                    session_id=self._session_id,
+                    task=context.task,
+                    model=metrics.model,
+                    step_count=metrics.total_steps,
+                    files_touched=list(all_edits),
+                    errors=[failure_reason] if failure_reason else [],
+                    token_usage={"total": metrics.total_tokens},
+                    cost_usd=metrics.total_cost_usd,
+                    checkpoint_step=metrics.total_steps,
+                )
+                checkpoint_save(state)
+
                 return AgentResult(
                     success=success,
                     output=output,
@@ -1380,6 +1644,7 @@ class ReactAgent:
                     verification=verification,
                     edits_made=all_edits,
                     named_targets_missing=named_targets_missing,
+                    failure_reason=failure_reason,
                 )
 
         # Max steps reached
@@ -1389,6 +1654,44 @@ class ReactAgent:
         trace.failure_reason = "Max steps reached"
         log.warning("agent.run.max_steps", extra=metrics.to_dict())
 
+        # H15: build change manifest for max-steps termination
+        change_manifest = {
+            "intent": context.task,
+            "blast_radius": {"files": all_edits},
+            "rollback": "git checkout" if all_edits else "none",
+            "residual_unknowns": [],
+        }
+
+        # ADR-1: emit RunEndEvent before max-steps return
+        self._emit(
+            _events.RunEndEvent(
+                step=context.max_steps,
+                success=False,
+                failure_reason=trace.failure_reason,
+                total_steps=metrics.total_steps,
+                total_tokens=metrics.total_tokens,
+                total_cost_usd=metrics.total_cost_usd,
+                edits_made=list(all_edits),
+                correlation=self._make_correlation(metrics),
+                change_manifest=change_manifest,
+                timestamp_ms=_events.now_ms(),
+            )
+        )
+
+        # Phase 5 (L5b): save session checkpoint
+        state = SessionState(
+            session_id=self._session_id,
+            task=context.task,
+            model=metrics.model,
+            step_count=metrics.total_steps,
+            files_touched=list(all_edits),
+            errors=[trace.failure_reason],
+            token_usage={"total": metrics.total_tokens},
+            cost_usd=metrics.total_cost_usd,
+            checkpoint_step=metrics.total_steps,
+        )
+        checkpoint_save(state)
+
         return AgentResult(
             success=False,
             output="Max steps reached without finishing. Try increasing max_steps or simplifying the task.",
@@ -1397,6 +1700,7 @@ class ReactAgent:
             total_tokens=metrics.total_tokens,
             total_cost_usd=metrics.total_cost_usd,
             edits_made=all_edits,
+            failure_reason=trace.failure_reason,
         )
 
     def run(self, context: AgentContext) -> AgentResult:

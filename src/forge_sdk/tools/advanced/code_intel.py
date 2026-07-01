@@ -30,8 +30,8 @@ def _parse_python_file(path: str) -> dict[str, Any]:
         return {"error": str(exc), "path": path}
 
     entities: list[dict[str, Any]] = []
-    imports: list[dict[str, str]] = []
-    calls: list[dict[str, str]] = []
+    imports: list[dict[str, str | int | None]] = []
+    calls: list[dict[str, str | int]] = []
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

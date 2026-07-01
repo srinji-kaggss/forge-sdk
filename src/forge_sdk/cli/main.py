@@ -26,9 +26,25 @@ def scope_path_to_cwd(path_str: str, run_cwd: Path) -> Path:
 
 def cmd_run(args: argparse.Namespace) -> None:
     """Run an agent on a task."""
+    import uuid
+
     from forge_sdk.agents.react import ReactAgent
     from forge_sdk.agents.types import AgentContext
     from forge_sdk.audit import AuditLog
+
+    # Phase 4 (L5a): Permission Gate
+    from forge_sdk.cli.permissions import (
+        ANTI_SLOP_STRATEGIES,
+        DEFAULT_STRATEGIES,
+        PermissionGate,
+        PermissionMode,
+    )
+
+    # Phase 5 (L5b): Session Recovery
+    from forge_sdk.cli.session import (
+        checkpoint_restore,
+        list_checkpoints,
+    )
     from forge_sdk.config import ForgeConfig
     from forge_sdk.tools import ToolRegistry
     from forge_sdk.tools.filesystem import FILE_TOOLS
@@ -36,6 +52,18 @@ def cmd_run(args: argparse.Namespace) -> None:
     from forge_sdk.tools.shell import SHELL_TOOL
     from forge_sdk.tracing.tracer import Tracer
     from forge_sdk.verifiers import Verifier
+
+    # --list-sessions: print saved sessions and exit
+    if getattr(args, "list_sessions", False):
+        sessions = list_checkpoints(Path(args.checkpoint_dir))
+        if not sessions:
+            print("No saved sessions found.")
+        else:
+            print(f"{'SESSION ID':<40} {'STEPS':<8} {'TASK'}")
+            print("-" * 80)
+            for s in sessions:
+                print(f"{s['session_id']:<40} {s['steps']:<8} {s['task']}")
+        return
 
     cfg = ForgeConfig.load(args.config)
     if args.provider:
@@ -54,7 +82,53 @@ def cmd_run(args: argparse.Namespace) -> None:
     audit = AuditLog(str(scope_path_to_cwd(cfg.audit_db, run_cwd)))
     verifier = Verifier()
 
-    agent = ReactAgent(model=model, tools=tools, tracer=tracer, audit=audit, verifier=verifier)
+    # ADR-2: renderer injection — CLI chooses output format, SDK stays pure
+    renderer = None
+    if not args.print:
+        if args.output_format == "stream-json":
+            from forge_sdk.cli.renderers import NDJSONRenderer
+
+            renderer = NDJSONRenderer()
+        else:
+            from forge_sdk.cli.renderers import TextRenderer
+
+            renderer = TextRenderer()
+
+    event_callback = renderer.on_event if renderer else None
+
+    # Phase 4 (L5a): Build permission gate
+    mode = PermissionMode(args.permission_mode)
+    pg = PermissionGate(mode)
+    for s in ANTI_SLOP_STRATEGIES:
+        pg.register(s)
+    for s in DEFAULT_STRATEGIES:
+        pg.register(s)
+
+    # Phase 5 (L5b): Session recovery — resolve session_id
+    session_id = args.resume or str(uuid.uuid4())
+    session_state = None
+    if args.resume:
+        session_state = checkpoint_restore(args.resume, Path(args.checkpoint_dir))
+        if session_state:
+            print(
+                f"Resuming session {args.resume} (step {session_state.step_count})", file=sys.stderr
+            )
+
+    agent = ReactAgent(
+        model=model,
+        tools=tools,
+        tracer=tracer,
+        audit=audit,
+        verifier=verifier,
+        event_callback=event_callback,
+        permission_gate=pg,
+        session_id=session_id,
+        sandbox_dir=args.sandbox,
+        verify_command=args.verify_command,
+        auto_verify=not args.no_verify,
+        max_tokens=args.max_tokens,
+        max_cost_usd=args.max_cost,
+    )
 
     context = AgentContext(
         task=args.task,
@@ -62,16 +136,21 @@ def cmd_run(args: argparse.Namespace) -> None:
         max_steps=args.max_steps or cfg.max_steps,
     )
 
-    print(f"Running task: {args.task}")
-    print(f"Model: {model.name} ({model.provider})")
-    print("---")
+    # Legacy: suppress header when streaming (renderer prints its own)
+    if not renderer:
+        print(f"Running task: {args.task}")
+        print(f"Model: {model.name} ({model.provider})")
+        print("---")
 
     result = agent.run(context)
 
-    print("---")
-    print(f"Status: {'SUCCESS' if result.success else 'FAILED'}")
-    print(f"Steps: {len(result.steps)}")
-    print(f"Tokens: {result.total_tokens}")
+    if renderer:
+        renderer.on_end(0 if result.success else 1)
+    else:
+        print("---")
+        print(f"Status: {'SUCCESS' if result.success else 'FAILED'}")
+        print(f"Steps: {len(result.steps)}")
+        print(f"Tokens: {result.total_tokens}")
     if result.verification:
         print(f"Verification: {result.verification_summary}")
         for v in result.verification:
@@ -86,6 +165,11 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"\nTraces: {trace_path}")
     print(f"Audit entries: {audit.count()}")
     audit.close()
+
+    if not result.success:
+        if result.failure_reason:
+            print(f"Reason: {result.failure_reason}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_eval(args: argparse.Namespace) -> None:
@@ -187,6 +271,18 @@ def cmd_audit(args: argparse.Namespace) -> None:
     audit.close()
 
 
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """Run environment diagnostic checks."""
+    from forge_sdk.cli.doctor import run_doctor
+
+    exit_code = run_doctor(
+        config_path=args.config,
+        json_output=args.json_output,
+        docs_flag=args.docs_flag,
+    )
+    sys.exit(exit_code)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="forge",
@@ -202,6 +298,45 @@ def main() -> None:
     run_parser.add_argument("--model", help="Model name")
     run_parser.add_argument("--cwd", help="Working directory")
     run_parser.add_argument("--max-steps", type=int, help="Max agent steps")
+    run_parser.add_argument(
+        "--output-format",
+        choices=["text", "json", "stream-json"],
+        default="text",
+        help="Output format (default: text)",
+    )
+    run_parser.add_argument(
+        "--print",
+        action="store_true",
+        help="Suppress streaming output; print only final result (legacy)",
+    )
+    # Phase 3 (L2 Exposure): surface the Moat
+    run_parser.add_argument("--sandbox", help="Restrict file writes to this directory")
+    run_parser.add_argument("--verify-command", help="Build/test command to gate SUCCESS")
+    run_parser.add_argument("--no-verify", action="store_true", help="Skip empirical verification")
+    run_parser.add_argument(
+        "--max-tokens", type=int, default=32000, help="Context window token limit"
+    )
+    run_parser.add_argument(
+        "--max-cost", type=float, default=1.0, help="Max cost in USD before aborting"
+    )
+    # Phase 4 (L5a): Permission mode
+    run_parser.add_argument(
+        "--permission-mode",
+        choices=["yolo", "interactive", "plan"],
+        default="interactive",
+        help="Permission mode: yolo, interactive, plan (default: interactive)",
+    )
+    # Phase 5 (L5b): Session Recovery
+    run_parser.add_argument("--resume", help="Resume from session ID")
+    run_parser.add_argument(
+        "--checkpoint-dir",
+        help="Custom checkpoint directory",
+        default=str(Path.home() / ".forge" / "checkpoints"),
+    )
+    run_parser.add_argument(
+        "--max-checkpoints", type=int, default=10, help="Max checkpoint files to keep"
+    )
+    run_parser.add_argument("--list-sessions", action="store_true", help="List saved sessions")
 
     # eval command
     eval_parser = subparsers.add_parser("eval", help="Run evaluation benchmarks")
@@ -215,6 +350,15 @@ def main() -> None:
     audit_parser.add_argument("--verify", action="store_true", help="Verify chain integrity")
     audit_parser.add_argument("--limit", type=int, help="Max entries to show")
 
+    # doctor command
+    doctor_parser = subparsers.add_parser("doctor", help="Run environment diagnostic checks")
+    doctor_parser.add_argument(
+        "--json", dest="json_output", action="store_true", help="Output as NDJSON"
+    )
+    doctor_parser.add_argument(
+        "--docs", dest="docs_flag", action="store_true", help="Include documentation checks (stub)"
+    )
+
     args = parser.parse_args()
     if args.command == "run":
         cmd_run(args)
@@ -222,6 +366,8 @@ def main() -> None:
         cmd_eval(args)
     elif args.command == "audit":
         cmd_audit(args)
+    elif args.command == "doctor":
+        cmd_doctor(args)
     else:
         parser.print_help()
 

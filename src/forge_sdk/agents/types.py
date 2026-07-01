@@ -2,13 +2,12 @@
 
 INV-201: result carries verification evidence[], not self-rated confidence.
 INV-202: success = resolution (verification passed), not submission.
+INV-208: failure_reason carries the truthful terminal cause of a FAILED run.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
-# Forward reference to avoid circular import
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -46,6 +45,7 @@ class AgentResult:
 
     INV-201: verification[] carries evidence of which gates passed.
     INV-202: success = verification passed (resolution), not self-rated confidence.
+    INV-208: failure_reason is the truthful terminal cause of a FAILED run.
     """
 
     success: bool
@@ -60,6 +60,11 @@ class AgentResult:
     named_targets_missing: list[str] = field(
         default_factory=list
     )  # files named in the task but never edited (advisory, see v0.5.2)
+    # Previously a model-auth failure ("Illegal header value b'Bearer '") was
+    # caught, logged, discarded, and the human was told "Max steps reached" —
+    # the wrong reason. This field carries the real cause so the CLI (and any
+    # machine consumer) can report it honestly. Empty string on SUCCESS.
+    failure_reason: str = ""
 
     @property
     def verification_summary(self) -> str:
