@@ -16,7 +16,6 @@ from __future__ import annotations
 from forge_sdk.agents.react import ReactAgent
 from forge_sdk.agents.types import AgentContext
 from forge_sdk.models.types import ModelResponse, normalize_openai_tool_calls
-from forge_sdk.models.vertex import VertexProvider
 from forge_sdk.tools.filesystem import FILE_TOOLS
 from forge_sdk.tools.registry import ToolRegistry
 
@@ -49,82 +48,9 @@ def test_normalize_openai_tool_calls_defaults_to_empty_dict_on_malformed_json():
     assert result == [{"id": "1", "name": "write_file", "arguments": {}}]
 
 
-# ── Vertex/Gemini native tool-calling translation ───────────────────
-
-
-def test_vertex_converts_openai_tools_to_gemini_declarations():
-    openai_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "Read a file",
-                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
-            },
-        }
-    ]
-    declarations = VertexProvider._openai_tools_to_gemini_declarations(openai_tools)
-    assert declarations == [
-        {
-            "functionDeclarations": [
-                {
-                    "name": "read_file",
-                    "description": "Read a file",
-                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
-                }
-            ]
-        }
-    ]
-
-
-def test_vertex_build_payload_includes_tools_when_provided(monkeypatch):
-    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
-    monkeypatch.setattr("forge_sdk.models.vertex._fetch_access_token", lambda: "fake-token")
-    provider = VertexProvider()
-    tools = [{"type": "function", "function": {"name": "finish", "parameters": {}}}]
-
-    payload = provider._build_payload(
-        [{"role": "user", "content": "hi"}], temperature=0.0, max_tokens=None, stop=None, tools=tools
-    )
-
-    assert payload["tools"] == [{"functionDeclarations": [{"name": "finish", "description": "", "parameters": {}}]}]
-
-
-def test_vertex_parse_response_extracts_function_call(monkeypatch):
-    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
-    monkeypatch.setattr("forge_sdk.models.vertex._fetch_access_token", lambda: "fake-token")
-    provider = VertexProvider()
-    data = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [{"functionCall": {"name": "write_file", "args": {"path": "x.txt", "content": "hi"}}}]
-                },
-                "finishReason": "STOP",
-            }
-        ],
-        "usageMetadata": {},
-    }
-
-    response = provider._parse_response(data)
-
-    assert response.tool_calls == [{"id": "", "name": "write_file", "arguments": {"path": "x.txt", "content": "hi"}}]
-    assert response.content == ""  # no text parts, only a functionCall part
-
-
-def test_vertex_parse_response_no_tool_calls_when_text_only(monkeypatch):
-    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
-    monkeypatch.setattr("forge_sdk.models.vertex._fetch_access_token", lambda: "fake-token")
-    provider = VertexProvider()
-    data = {
-        "candidates": [{"content": {"parts": [{"text": "hello"}]}, "finishReason": "STOP"}],
-        "usageMetadata": {},
-    }
-
-    response = provider._parse_response(data)
-
-    assert response.tool_calls == []
-    assert response.content == "hello"
+# Vertex/Gemini-specific translation tests live in test_models_vertex.py,
+# next to the rest of that provider's tests (built on the official
+# google-genai SDK) — no duplicate copy here.
 
 
 # ── End-to-end: ReactAgent dispatches directly from tool_calls ─────
