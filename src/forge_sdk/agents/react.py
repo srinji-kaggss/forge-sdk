@@ -201,7 +201,7 @@ def _unwrap_nested_finish(parsed: dict[str, Any]) -> dict[str, Any] | None:
     if inner_start < 0 or inner_end <= inner_start:
         return None
     try:
-        inner = json.loads(output[inner_start:inner_end])
+        inner = json.loads(output[inner_start:inner_end], strict=False)
         if "action" in inner and "action_input" in inner:
             return inner
     except (json.JSONDecodeError, ValueError):
@@ -248,7 +248,7 @@ class FullJsonStrategy(ParseStrategy):
         if len(json_str) > 100_000:
             json_str = json_str[:100_000]
         try:
-            parsed = json.loads(json_str)
+            parsed = json.loads(json_str, strict=False)
             if not isinstance(parsed, dict) or "action" not in parsed:
                 return None
             # Try unwrapping nested finish→tool call
@@ -281,7 +281,7 @@ class FirstValidJsonStrategy(ParseStrategy):
                     if depth == 0:
                         candidate = content[obj_start : i + 1]
                         try:
-                            parsed = json.loads(candidate)
+                            parsed = json.loads(candidate, strict=False)
                             if isinstance(parsed, dict) and "action" in parsed:
                                 unwrapped = _unwrap_nested_finish(parsed)
                                 return unwrapped if unwrapped else parsed
