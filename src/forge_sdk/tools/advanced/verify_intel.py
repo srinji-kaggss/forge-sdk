@@ -188,7 +188,9 @@ async def git_diff(path: str = ".") -> ToolResult:
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        return ToolResult(success=False, output="", error=stderr.decode().strip() or "git diff failed")
+        return ToolResult(
+            success=False, output="", error=stderr.decode().strip() or "git diff failed"
+        )
     diff = stdout.decode()
 
     files_changed = len(re.findall(r"^diff --git", diff, re.MULTILINE))
