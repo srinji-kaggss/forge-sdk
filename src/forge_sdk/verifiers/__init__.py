@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from forge_sdk.text_tokens import FILE_PATH_TOKEN, is_real_file_token
+
 from forge_sdk.models.port import ModelPort
 from forge_sdk.security import contain_untrusted_text
 
@@ -74,7 +76,7 @@ _SPEC_TARGET_EXCLUDE_CONTEXT = re.compile(
     r"exclud(?:e|ed|ing)|out\s+of\s+scope|already\s+correct)\b",
     re.IGNORECASE,
 )
-_SPEC_FILE_PATH_TOKEN = re.compile(r"\b[\w][\w./-]*\.[A-Za-z]{1,5}\b")
+_SPEC_FILE_PATH_TOKEN = FILE_PATH_TOKEN
 
 
 def _spec_nearest_context(preceding: str) -> tuple[int, int]:
@@ -104,7 +106,7 @@ def spec_conformance_check(
     for match in _SPEC_FILE_PATH_TOKEN.finditer(task):
         preceding = task[max(prev_end, match.start() - 80) : match.start()]
         nearest_exclude, nearest_action = _spec_nearest_context(preceding)
-        if nearest_action > nearest_exclude:
+        if nearest_action > nearest_exclude and is_real_file_token(match.group(0)):
             task_files.add(match.group(0))
         prev_end = match.end()
 

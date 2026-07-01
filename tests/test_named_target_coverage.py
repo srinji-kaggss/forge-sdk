@@ -96,6 +96,22 @@ def test_single_target_task_with_no_omission_is_clean():
     assert agent._missing_named_targets(task, all_edits) == []
 
 
+def test_named_edit_targets_ignores_eg_abbreviation():
+    """Live bug: '(e.g. RATIFIED or leave as PROPOSED)' in a real task
+    prompt matched _FILE_PATH_TOKEN as a fake file "e.g" (stem "e", ext
+    "g"), sitting near the action verb "edit" a few words earlier ('...
+    status-header edit for A18 (e.g. ...'), so it was flagged as a missing
+    edit target and downgraded a genuinely correct run's trustworthiness.
+    """
+    agent = _agent()
+    task = (
+        "Recommend a one-line status-header edit for A18 "
+        "(e.g. RATIFIED or leave as PROPOSED with reason)."
+    )
+    targets = agent._named_edit_targets(task)
+    assert "e.g" not in targets
+
+
 class _OneOfTwoEditsModel:
     """Scripted model reproducing the real Failure Class B shape end-to-end:
     writes the first named target, then claims finish without touching the
