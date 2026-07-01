@@ -60,6 +60,25 @@ def test_scoped_exclusion_naming_another_file_still_implies_edits():
     assert agent._task_implies_edits(task) is True
 
 
+def test_do_not_edit_code_scoped_to_code_still_implies_edits_when_a_doc_is_named():
+    """Live bug, real forge run against semantic-memory-brain: "Do not edit
+    code. Write docs/FORGE_RUST_STORE_REVIEW.md." has an unscoped "Do not
+    edit" ("code." isn't a recognized scoped-tail target), so this used to
+    return False -- disabling the has-edits safety net entirely. The run
+    then never called write_file at all (confirmed via its trace: 5
+    read_file calls, zero writes) and still reported Status: SUCCESS,
+    because spec_conformance's "or mentioned in the output text" fallback
+    was satisfied by the model's own closing summary sentence alone.
+    """
+    agent = _agent()
+    task = (
+        "Review this repo as a read-only Rust storage reviewer.\n\n"
+        "Do not edit code. Write docs/FORGE_RUST_STORE_REVIEW.md.\n"
+        "Keep it under 1200 words."
+    )
+    assert agent._task_implies_edits(task) is True
+
+
 def test_plain_research_task_without_negation_still_uses_keyword_heuristic():
     """No read-only marker present -> existing keyword-based behavior is
     unchanged (this task class genuinely is ambiguous without an explicit

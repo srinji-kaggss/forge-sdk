@@ -696,9 +696,21 @@ class ReactAgent:
         ("don't touch any other file", "don't modify lgwks_redact.py itself")
         is a scoped exclusion within an edit task, not a blanket read-only
         statement — only an unscoped negation counts as genuinely read-only.
+
+        Live bug: "Do not edit code. Write docs/REVIEW.md." has an unscoped
+        "Do not edit" (the word right after it, "code.", isn't a recognized
+        scoped-tail target), so this used to return False outright — even
+        though the task's very next sentence names a real, explicit write
+        target. That silently disabled the has-edits safety net for a real
+        write task, and a run that never called write_file at all reported
+        Status: SUCCESS on the strength of its own summary text alone. A
+        real named edit target elsewhere in the task overrides an earlier
+        unscoped-but-locally-scoped ("code", not "anything") negation.
         """
         for match in _READ_ONLY_MARKERS.finditer(task):
-            if not _READ_ONLY_SCOPED_TAIL.match(task, match.end()):
+            if not _READ_ONLY_SCOPED_TAIL.match(task, match.end()) and not self._named_edit_targets(
+                task
+            ):
                 return False
         if _ACTION_VERBS.search(task):
             return True
