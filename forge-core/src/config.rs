@@ -250,55 +250,57 @@ mod tests {
     }
 
     #[test]
-    fn test_env_override_precedence() {
-        let key = "forge-test-override-key-12345";
-        env::set_var("FORGE_API_KEY", key);
+    fn test_save_and_reload_all_env_patterns() {
+        // Combined test to avoid parallel env-var races.
+        // Tests: defaults, env-override, no-clobber, save-reload, env-after-save
 
+        let _key_g = EnvGuard::new("FORGE_API_KEY");
+        let _prov_g = EnvGuard::new("OPENROUTER_API_KEY");
+        let _temp_g = EnvGuard::new("FORGE_TEMPERATURE");
+
+        // -- test: defaults -------------------------------------------------------
+        let def = ForgeConfig::defaults();
+        assert_eq!(def.provider, "deepseek");
+        assert_eq!(def.model, "deepseek-chat");
+        assert_eq!(def.api_key, "");
+        assert_eq!(def.base_url, "");
+        assert!((def.temperature - 0.7).abs() < 1e-9);
+        assert_eq!(def.max_tokens, None);
+        assert_eq!(def.max_steps, 50);
+        assert_eq!(def.cwd, PathBuf::from("."));
+        assert_eq!(def.eval_limit, None);
+        assert_eq!(def.eval_benchmark, "default");
+        assert_eq!(def.trace_dir, PathBuf::from(".forge/traces"));
+        assert_eq!(def.audit_db, PathBuf::from(".forge/audit.db"));
+        assert!(def.config_file.is_none());
+
+        // -- test: env-override + no-provider-key-clobber -------------------------
+        env::set_var("FORGE_API_KEY", "forge-test-key-12345");
         let cfg = ForgeConfig::load(None).unwrap();
+        assert_eq!(cfg.api_key, "forge-test-key-12345");
 
-        env::remove_var("FORGE_API_KEY");
-
-        assert_eq!(cfg.api_key, key);
-    }
-
-    #[test]
-    fn test_no_provider_key_clobber() {
         env::set_var("OPENROUTER_API_KEY", "sk-or-v1-should-not-clobber");
+        let cfg2 = ForgeConfig::load(None).unwrap();
+        assert_eq!(cfg2.api_key, "forge-test-key-12345",
+            "api_key must NOT be overwritten by OPENROUTER_API_KEY");
 
-        let cfg = ForgeConfig::load(None).unwrap();
-
-        env::remove_var("OPENROUTER_API_KEY");
-
-        assert_eq!(cfg.api_key, "",
-            "api_key must NOT be set by OPENROUTER_API_KEY");
-    }
-
-    #[test]
-    fn test_save_and_reload() {
+        // -- test: save and reload ------------------------------------------------
+        env::remove_var("FORGE_API_KEY");
         let tmp = TempDir::new().unwrap();
         let config_path = tmp.path().join("config.json");
 
         let original = ForgeConfig {
-            provider: "openrouter".to_string(),
-            model: "anthropic/claude-3.5-sonnet".to_string(),
-            api_key: "sk-or-v1-test".to_string(),
-            base_url: "https://openrouter.ai/api/v1".to_string(),
-            temperature: 0.3,
-            max_tokens: Some(4096),
-            max_steps: 100,
-            cwd: PathBuf::from("/tmp/work"),
-            eval_limit: Some(10),
-            eval_benchmark: "spec-bench".to_string(),
-            trace_dir: PathBuf::from("/tmp/traces"),
-            audit_db: PathBuf::from("/tmp/audit.db"),
-            config_file: None,
+            provider: "openrouter".into(), model: "anthropic/claude-3.5-sonnet".into(),
+            api_key: "sk-or-v1-test".into(), base_url: "https://openrouter.ai/api/v1".into(),
+            temperature: 0.3, max_tokens: Some(4096), max_steps: 100,
+            cwd: PathBuf::from("/tmp/work"), eval_limit: Some(10),
+            eval_benchmark: "spec-bench".into(), trace_dir: PathBuf::from("/tmp/traces"),
+            audit_db: PathBuf::from("/tmp/audit.db"), config_file: None,
         };
-
         original.save(&config_path).unwrap();
-        assert!(config_path.exists(), "config file must exist after save");
+        assert!(config_path.exists());
 
         let loaded = ForgeConfig::load(Some(&config_path)).unwrap();
-
         assert_eq!(loaded.provider, original.provider);
         assert_eq!(loaded.model, original.model);
         assert_eq!(loaded.api_key, original.api_key);
@@ -312,28 +314,37 @@ mod tests {
         assert_eq!(loaded.trace_dir, original.trace_dir);
         assert_eq!(loaded.audit_db, original.audit_db);
         assert_eq!(loaded.config_file, Some(config_path.clone()));
-    }
 
-    #[test]
-    fn test_save_reload_with_env_override() {
-        let tmp = TempDir::new().unwrap();
-        let config_path = tmp.path().join("config.json");
-
-        let original = ForgeConfig {
-            temperature: 0.9,
-            ..ForgeConfig::defaults()
-        };
-        original.save(&config_path).unwrap();
-
+        // -- test: env override after reload --------------------------------------
         env::set_var("FORGE_TEMPERATURE", "0.1");
-        let loaded = ForgeConfig::load(Some(&config_path)).unwrap();
-        env::remove_var("FORGE_TEMPERATURE");
-
+        let loaded2 = ForgeConfig::load(Some(&config_path)).unwrap();
         assert!(
-            (loaded.temperature - 0.1).abs() < 1e-9,
+            (loaded2.temperature - 0.1).abs() < 1e-9,
             "env FORGE_TEMPERATURE should override file value: got {}",
-            loaded.temperature
+            loaded2.temperature
         );
+    }
+}
+
+/// RAII guard that saves an env var on creation and restores it on drop.
+struct EnvGuard {
+    key: String,
+    old: Option<String>,
+}
+
+impl EnvGuard {
+    fn new(key: &str) -> Self {
+        let old = env::var(key).ok();
+        Self { key: key.to_string(), old }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.old {
+            Some(v) => env::set_var(&self.key, v),
+            None => env::remove_var(&self.key),
+        }
     }
 }
 
