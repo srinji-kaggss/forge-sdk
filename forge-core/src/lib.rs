@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod context;
+pub mod doctor;
 pub mod event;
 pub mod guard;
 pub mod permission;
@@ -16,6 +17,7 @@ pub mod port;
 pub mod result;
 pub mod session;
 pub mod step;
+pub mod tracer;
 pub mod verifier;
 
 // -- re-exports: event -------------------------------------------------------
