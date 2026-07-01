@@ -1214,8 +1214,15 @@ class ReactAgent:
                     self._extract_edits_from_observation(action, action_input, observation)
                 )
 
-            # Add to messages for next iteration
-            messages.append({"role": "assistant", "content": response.content})
+            # Add to messages for next iteration. Native tool calls leave
+            # response.content empty (the provider put everything in
+            # tool_calls instead) -- record what was actually called so the
+            # history stays coherent; an empty assistant turn followed by a
+            # "Tool output" message gives the model no way to tell which of
+            # its own actions produced that output, which is how it can end
+            # up repeating the exact same call the LoopGuard already blocked.
+            assistant_content = response.content or f"Called {action}({action_input})"
+            messages.append({"role": "assistant", "content": assistant_content})
             if observation:
                 messages.append({"role": "user", "content": f"Tool output:\n{observation}"})
 
