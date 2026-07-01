@@ -56,6 +56,12 @@ class ForgeConfig:
         env_map = {
             "FORGE_PROVIDER": "provider",
             "FORGE_MODEL": "model",
+            # NOTE: provider API keys are resolved provider-aware in
+            # resolve_api_key() (DEEPSEEK_API_KEY / OPENROUTER_API_KEY by
+            # provider). They are intentionally NOT mapped here — mapping both
+            # to `api_key` let whichever was processed last silently clobber the
+            # other (a stale OPENROUTER_API_KEY -> 401 against deepseek).
+            # FORGE_API_KEY is the single explicit override.
             "FORGE_API_KEY": "api_key",
             "FORGE_BASE_URL": "base_url",
             "FORGE_TEMPERATURE": ("temperature", float),
