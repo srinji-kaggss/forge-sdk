@@ -14,6 +14,7 @@ pub mod guard;
 pub mod permission;
 pub mod port;
 pub mod result;
+pub mod session;
 pub mod step;
 pub mod verifier;
 
