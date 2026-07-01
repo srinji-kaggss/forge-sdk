@@ -12,7 +12,12 @@ from __future__ import annotations
 import base64
 import warnings
 
-from forge_sdk.security import ContainmentResult, contain_untrusted_text, sanitize_untrusted_text
+from forge_sdk.security import (
+    ContainmentResult,
+    _check_command_safety,
+    contain_untrusted_text,
+    sanitize_untrusted_text,
+)
 
 
 def test_empty_text_returns_empty_unquarantined_result():
@@ -106,3 +111,22 @@ def test_base64_encoded_payload_still_quarantined_by_length_or_caller_category()
     # _generate_suggestion) never composes this payload into a prompt
     # regardless of whether risk_score caught it.
     assert result.category in ("unclassified",)
+
+
+# ── L5 sensitive-path stopgap (specs/SPEC-SECURITY-003 Phase 0) ─────────────
+# .cline/ and .cursor/ hold real API-key stores for other AI-agent CLIs on
+# this machine; SENSITIVE_READ_PATHS missed them until this stopgap (a real,
+# demonstrated gap found this session -- forge's own denylist let
+# `cat ~/.cline/data/settings/settings.json` through with no gate firing).
+
+
+def test_check_command_safety_blocks_cline_credential_path():
+    result = _check_command_safety("cat ~/.cline/data/settings/settings.json")
+    assert result is not None
+    assert "BLOCKED" in result
+
+
+def test_check_command_safety_blocks_cursor_credential_path():
+    result = _check_command_safety("cat ~/.cursor/config.json")
+    assert result is not None
+    assert "BLOCKED" in result

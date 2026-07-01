@@ -51,6 +51,9 @@ SENSITIVE_READ_PATHS = (
     ".git/credentials",
     "keychain",
     "login.keychain",
+    # stopgap -- see specs/SPEC-SECURITY-003 Phase 0 for the structural fix
+    ".cline/",
+    ".cursor/",
 )
 
 SENSITIVE_WRITE_PATHS = (
