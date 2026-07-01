@@ -6,7 +6,8 @@ use forge_core::agent::{Agent, AgentState, LifecycleAgent};
 use forge_core::config::ForgeConfig;
 use forge_core::event::AgentEvent;
 use forge_core::permission::{PermissionGate, PermissionMode};
-use forge_core::port::{ModelError, ModelPort, ModelResponse, ToolSpec};
+use forge_core::port::ModelPort;
+use forge_providers::deepseek::DeepSeekProvider;
 use forge_core::verifier::VerifierPipeline;
 use forge_core_security::containment::Trusted;
 use forge_core_security::sandbox::SandboxRoot;
@@ -23,36 +24,6 @@ struct Cli {
     /// Task description text
     #[arg(long)]
     task: String,
-}
-
-// ---------------------------------------------------------------------------
-// Mock model port — returns an empty response so the agent loop terminates
-// immediately without actually calling any LLM provider.
-// ---------------------------------------------------------------------------
-struct MockModelPort;
-
-#[async_trait::async_trait]
-impl ModelPort for MockModelPort {
-    async fn generate(
-        &self,
-        _system: &str,
-        _messages: &[std::collections::HashMap<String, String>],
-    ) -> Result<ModelResponse, ModelError> {
-        Ok(ModelResponse::new("", vec![], 0, 0, "mock"))
-    }
-
-    async fn generate_with_tools(
-        &self,
-        _system: &str,
-        _messages: &[std::collections::HashMap<String, String>],
-        _tools: &[ToolSpec],
-    ) -> Result<ModelResponse, ModelError> {
-        Ok(ModelResponse::new("", vec![], 0, 0, "mock"))
-    }
-
-    async fn count_tokens(&self, _text: &str) -> Result<u64, ModelError> {
-        Ok(0)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,8 +56,8 @@ async fn main() {
         max_cost: None,
     };
 
-    let model_port: Arc<dyn ModelPort> = Arc::new(MockModelPort);
-    let mut agent = LifecycleAgent::new(model_port, vec![], vec![]);
+    let provider = Arc::new(DeepSeekProvider::new(config.model.clone()));
+    let mut agent = LifecycleAgent::new(provider as Arc<dyn ModelPort>, vec![], vec![]);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
 
