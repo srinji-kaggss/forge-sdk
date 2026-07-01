@@ -18,10 +18,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from forge_sdk.text_tokens import FILE_PATH_TOKEN, is_real_file_token
-
 from forge_sdk.models.port import ModelPort
 from forge_sdk.security import contain_untrusted_text
+from forge_sdk.text_tokens import FILE_PATH_TOKEN, is_real_file_token
 
 
 class VerificationStatus(Enum):
