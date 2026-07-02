@@ -1,34 +1,58 @@
-mod tools;
-
+mod commands;
+pub mod render;
+pub mod tools;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use clap::Parser;
-use forge_core::agent::{Agent, AgentState, LifecycleAgent};
-use forge_core::config::ForgeConfig;
-use forge_core::event::AgentEvent;
-use forge_core::permission::{PermissionGate, PermissionMode};
-use forge_core::port::ModelPort;
-use forge_core::result::{AgentResult, FailureReason};
-use forge_core::verifier::VerifierPipeline;
-use forge_core_security::containment::Trusted;
-use forge_core_security::sandbox::SandboxRoot;
-use forge_providers::deepseek::DeepSeekProvider;
+use clap::{Parser, Subcommand};
+use forge_core::result::AgentResult;
 use std::process::ExitCode;
 
 // ---------------------------------------------------------------------------
 // CLI args
 // ---------------------------------------------------------------------------
 #[derive(Parser)]
+#[command(name = "forge", about = "Forge agent runtime")]
 struct Cli {
-    /// Path to config file (defaults to standard locations)
-    #[arg(long)]
-    config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: ForgeCommand,
+}
 
-    /// Task description text
-    #[arg(long)]
-    task: String,
+#[derive(Subcommand)]
+enum ForgeCommand {
+    /// Run a forge agent task
+    Run(commands::run::RunArgs),
+    /// Run diagnostic checks
+    Doctor(commands::doctor::DoctorArgs),
+    /// Manage sessions
+    Session(commands::session::SessionArgs),
+    /// Inspect the audit log
+    Audit(commands::audit::AuditArgs),
+    /// Evaluation commands
+    Eval(EvalArgs),
+}
+
+/// Evaluation subcommand (smoke)
+#[derive(clap::Args, Debug, Clone)]
+struct EvalArgs {
+    #[command(subcommand)]
+    action: EvalAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum EvalAction {
+    /// Run a smoke test
+    Smoke {
+        /// Working directory
+        #[arg(long, default_value = ".")]
+        cwd: PathBuf,
+        /// Task for the smoke test
+        #[arg(long, default_value = "List the files in the current directory")]
+        task: String,
+        /// Output format
+        #[arg(long, default_value = "json")]
+        output_format: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -38,60 +62,69 @@ struct Cli {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // Load config — uses defaults / env overrides when no file given
-    let config = match ForgeConfig::load(cli.config.as_deref()) {
-        Ok(config) => config,
-        Err(err) => {
-            return emit_result(config_failure(format!("Failed to load config: {err:?}")));
+    match cli.command {
+        ForgeCommand::Run(args) => {
+            let result = commands::run::execute(&args).await;
+            emit_result(result)
         }
-    };
-
-    // Sandbox rooted at the config's working directory
-    let sandbox = match SandboxRoot::new(&config.cwd) {
-        Ok(sandbox) => sandbox,
-        Err(err) => {
-            return emit_result(config_failure(format!(
-                "Failed to create sandbox at '{}': {err:?}",
-                config.cwd.display()
-            )));
+        ForgeCommand::Doctor(args) => {
+            let use_json = args.json;
+            let report = commands::doctor::execute(&args).await;
+            if use_json {
+                match serde_json::to_string_pretty(&report) {
+                    Ok(json) => println!("{json}"),
+                    Err(err) => {
+                        eprintln!("Failed to serialize doctor report: {err}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            ExitCode::SUCCESS
         }
-    };
-
-    let mut state = AgentState {
-        task: Trusted::new_internal(cli.task),
-        sandbox,
-        cwd: config.cwd.clone(),
-        steps: vec![],
-        files_read_in_session: vec![],
-        permission_mode: PermissionMode::Yolo,
-        permission_gate: PermissionGate::new(PermissionMode::Yolo),
-        verifier: VerifierPipeline::with_default_gates(None),
-        model_port: None,
-        total_tokens: 0,
-        total_cost: 0.0,
-        max_steps: config.max_steps,
-        max_tokens: config.max_tokens,
-        max_cost: None,
-    };
-
-    let provider = match DeepSeekProvider::from_config(&config) {
-        Ok(provider) => Arc::new(provider),
-        Err(err) => return emit_result(provider_failure(&config, err)),
-    };
-    let mut agent = LifecycleAgent::new(
-        provider as Arc<dyn ModelPort>,
-        tools::default_tools(),
-        vec![],
-    );
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
-
-    // Drain events in background so the event sender never stalls
-    tokio::spawn(async move { while rx.recv().await.is_some() {} });
-
-    let result = agent.run_with_events(&mut state, tx).await;
-
-    emit_result(result)
+        ForgeCommand::Session(args) => match commands::session::execute(&args).await {
+            Ok(output) => {
+                println!("{output}");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("Session error: {err}");
+                ExitCode::from(1)
+            }
+        },
+        ForgeCommand::Audit(args) => match commands::audit::execute(&args).await {
+            Ok(output) => {
+                println!("{output}");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("Audit error: {err}");
+                ExitCode::from(1)
+            }
+        },
+        ForgeCommand::Eval(args) => match args.action {
+            EvalAction::Smoke {
+                cwd,
+                task,
+                output_format,
+            } => {
+                let run_args = commands::run::RunArgs {
+                    cwd,
+                    task,
+                    config: None,
+                    permission_mode: "yolo".to_string(),
+                    output_format,
+                    verify_command: None,
+                    no_verify: true,
+                    max_steps: Some(3),
+                    max_tokens: Some(500),
+                    max_cost: Some(0.01),
+                    checkpoint_dir: None,
+                };
+                let result = commands::run::execute(&run_args).await;
+                emit_result(result)
+            }
+        },
+    }
 }
 
 fn emit_result(result: AgentResult) -> ExitCode {
@@ -106,58 +139,5 @@ fn emit_result(result: AgentResult) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
-    }
-}
-
-fn config_failure(output: String) -> AgentResult {
-    AgentResult {
-        success: false,
-        output: output.clone(),
-        steps: vec![],
-        total_steps: 0,
-        total_tokens: 0,
-        total_cost: 0.0,
-        duration_ms: 0,
-        trace_id: String::new(),
-        run_id: String::new(),
-        model: String::new(),
-        provider: String::new(),
-        edits_made: vec![],
-        named_targets_missing: vec![],
-        failure_reason: Some(FailureReason::ModelError(output)),
-        verification: vec![],
-        change_manifest: None,
-        rollback_plan: None,
-    }
-}
-
-fn provider_failure(config: &ForgeConfig, err: forge_core::port::ModelError) -> AgentResult {
-    let failure_reason = match &err {
-        forge_core::port::ModelError::Authentication(detail) => {
-            FailureReason::AuthenticationFailure {
-                provider: config.provider.clone(),
-                detail: detail.clone(),
-            }
-        }
-        _ => FailureReason::ModelError(format!("{err:?}")),
-    };
-    AgentResult {
-        success: false,
-        output: failure_reason.causal_sentence(),
-        steps: vec![],
-        total_steps: 0,
-        total_tokens: 0,
-        total_cost: 0.0,
-        duration_ms: 0,
-        trace_id: String::new(),
-        run_id: String::new(),
-        model: config.model.clone(),
-        provider: config.provider.clone(),
-        edits_made: vec![],
-        named_targets_missing: vec![],
-        failure_reason: Some(failure_reason),
-        verification: vec![],
-        change_manifest: None,
-        rollback_plan: None,
     }
 }

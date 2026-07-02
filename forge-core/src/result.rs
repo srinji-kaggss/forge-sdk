@@ -29,6 +29,18 @@ pub enum FailureReason {
     PermissionDenied { action: String, reason: String },
     /// Authentication with the model provider failed.
     AuthenticationFailure { provider: String, detail: String },
+    /// Repo-driving task with no repo tools configured.
+    NoToolsConfigured,
+    /// Model named a file that does not exist.
+    PhantomFile(String),
+    /// Edit task ended with no edit and no explicit impossible reason.
+    NoEdit,
+    /// Verification was requested but did not run.
+    VerificationNotRun,
+    /// Tool failure happened and final answer ignores it.
+    UnacknowledgedToolFailure(String),
+    /// Tool-capable run silently fell back to no-tool chat.
+    SilentFallback,
 }
 
 impl FailureReason {
@@ -48,7 +60,13 @@ impl FailureReason {
             | Self::ConvergenceFailure { .. }
             | Self::MaxStepsReached
             | Self::VerificationFailed { .. }
-            | Self::PermissionDenied { .. } => false,
+            | Self::PermissionDenied { .. }
+            | Self::NoToolsConfigured
+            | Self::PhantomFile(_)
+            | Self::NoEdit
+            | Self::VerificationNotRun
+            | Self::UnacknowledgedToolFailure(_)
+            | Self::SilentFallback => false,
         }
     }
 
@@ -78,6 +96,23 @@ impl FailureReason {
             Self::AuthenticationFailure { provider, detail } => {
                 let truncated: String = detail.chars().take(80).collect();
                 format!("Authentication failure with '{}': {}", provider, truncated)
+            }
+            Self::NoToolsConfigured => {
+                "No tools configured — repo-driving task requires repo tools.".to_string()
+            }
+            Self::PhantomFile(path) => {
+                format!("Model named file that does not exist: {}", path)
+            }
+            Self::NoEdit => {
+                "Edit task ended with no edits and no explicit impossible reason.".to_string()
+            }
+            Self::VerificationNotRun => "Verification was requested but did not run.".to_string(),
+            Self::UnacknowledgedToolFailure(detail) => {
+                let truncated: String = detail.chars().take(80).collect();
+                format!("Tool failure unacknowledged in final answer: {}", truncated)
+            }
+            Self::SilentFallback => {
+                "Tool-capable run silently fell back to no-tool chat.".to_string()
             }
         }
     }

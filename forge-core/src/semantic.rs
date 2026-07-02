@@ -101,7 +101,11 @@ mod tests {
         let mut discriminants: Vec<isize> = labels.iter().map(|l| *l as isize).collect();
         discriminants.sort();
         discriminants.dedup();
-        assert_eq!(discriminants.len(), 8, "each variant must have a unique discriminant");
+        assert_eq!(
+            discriminants.len(),
+            8,
+            "each variant must have a unique discriminant"
+        );
     }
 
     #[test]

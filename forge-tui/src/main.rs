@@ -69,6 +69,7 @@ fn event_style(ev: &AgentEvent) -> Style {
         AgentEvent::TokenUsage(_) | AgentEvent::StateUpdate(_) | AgentEvent::Converge(_) => {
             Style::default().fg(CREAM)
         }
+        _ => Style::default().fg(CREAM),
     }
 }
 
@@ -87,6 +88,14 @@ fn event_label(ev: &AgentEvent) -> &'static str {
         AgentEvent::Decide(_) => "Decide",
         AgentEvent::Converge(_) => "Converge",
         AgentEvent::PermissionGate(_) => "PermGate",
+        AgentEvent::ModelRequest(_) => "ModelReq",
+        AgentEvent::ModelResponse(_) => "ModelResp",
+        AgentEvent::ToolCall(_) => "ToolCall",
+        AgentEvent::ToolResult(_) => "ToolResult",
+        AgentEvent::PermissionRequest(_) => "PermReq",
+        AgentEvent::PermissionDecision(_) => "PermDec",
+        AgentEvent::VerifyStart(_) => "VerifyStart",
+        AgentEvent::VerifyEnd(_) => "VerifyEnd",
     }
 }
 
@@ -95,7 +104,10 @@ fn event_summary(ev: &AgentEvent) -> String {
         AgentEvent::RunStart(rs) => format!("task: {}", rs.task),
         AgentEvent::RunEnd(re) => format!(
             "success:{} steps:{} tokens:{} cost:{:.4}",
-            re.success, re.total_steps, re.total_tokens, re.total_cost
+            re.success,
+            re.model_usage.total_steps,
+            re.model_usage.total_tokens,
+            re.model_usage.total_cost
         ),
         AgentEvent::RunError(err) => format!("error: {}", err.error),
         AgentEvent::Think(t) => format!("{} tokens:{}", truncate(&t.thought, 60), t.tokens_used),
@@ -104,7 +116,7 @@ fn event_summary(ev: &AgentEvent) -> String {
             format!("obs: {} exit:{}", truncate(&o.observation, 50), o.exit_code)
         }
         AgentEvent::Verify(v) => format!("gate:{} status:{}", v.gate, v.status),
-        AgentEvent::FileEdit(fe) => format!("path:{} action:{}", fe.path, fe.action_type),
+        AgentEvent::FileEdit(fe) => format!("path:{} action:{}", fe.path, "edit"),
         AgentEvent::TokenUsage(tu) => {
             format!("tokens:{} cost:{:.4}", tu.total_tokens, tu.total_cost)
         }
@@ -120,6 +132,14 @@ fn event_summary(ev: &AgentEvent) -> String {
         AgentEvent::PermissionGate(pg) => {
             format!("action:{} verdict:{}", pg.action, pg.verdict)
         }
+        AgentEvent::ModelRequest(_) => "model req".into(),
+        AgentEvent::ModelResponse(_) => "model resp".into(),
+        AgentEvent::ToolCall(tc) => format!("tool:{}", tc.name),
+        AgentEvent::ToolResult(tr) => format!("result:{}", tr.name),
+        AgentEvent::PermissionRequest(pr) => format!("perm:{}", pr.action),
+        AgentEvent::PermissionDecision(pd) => format!("{}:{}", pd.action, pd.decision),
+        AgentEvent::VerifyStart(vs) => format!("verify:{}", vs.command),
+        AgentEvent::VerifyEnd(ve) => format!("end:{} exit:{}", ve.command, ve.exit_code),
     }
 }
 

@@ -134,18 +134,47 @@ impl Episode {
             .as_secs_f64();
 
         Self {
-            id: obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            task: obj.get("task").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            outcome: obj.get("outcome").and_then(|v| serde_json::from_value::<EpisodeOutcome>(v.clone()).ok()).unwrap_or(EpisodeOutcome::Success),
-            steps: obj.get("steps").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
-            tools_used: obj.get("tools_used").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()).unwrap_or_default(),
+            id: obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            task: obj
+                .get("task")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            outcome: obj
+                .get("outcome")
+                .and_then(|v| serde_json::from_value::<EpisodeOutcome>(v.clone()).ok())
+                .unwrap_or(EpisodeOutcome::Success),
+            steps: obj
+                .get("steps")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            tools_used: obj
+                .get("tools_used")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default(),
             tokens_used: obj.get("tokens_used").and_then(|v| v.as_u64()).unwrap_or(0),
-            duration_ms: obj.get("duration_ms").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            duration_ms: obj
+                .get("duration_ms")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
             error: obj.get("error").and_then(|v| v.as_str()).map(String::from),
             lesson: obj.get("lesson").and_then(|v| v.as_str()).map(String::from),
-            domain: obj.get("domain").and_then(|v| v.as_str()).unwrap_or("general").to_string(),
+            domain: obj
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("general")
+                .to_string(),
             timestamp: obj.get("timestamp").and_then(|v| v.as_f64()).unwrap_or(now),
-            generation: obj.get("generation").and_then(|v| v.as_u64()).map(|v| v as u32).unwrap_or(0),
+            generation: obj
+                .get("generation")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0),
         }
     }
 }

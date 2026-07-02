@@ -1,5 +1,5 @@
 [package]
-name = "forge-cli"
+name = "forge-harness"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,9 +7,7 @@ edition = "2021"
 async-trait = "0.1"
 forge-core = { path = "../forge-core" }
 forge-core-security = { path = "../forge-core-security" }
-forge-providers = { path = "../forge-providers" }
-clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-glob = "0.3"
+tokio = { version = "1", features = ["rt", "macros"] }
+thiserror = "2"
