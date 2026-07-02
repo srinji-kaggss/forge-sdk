@@ -60,12 +60,16 @@ pub enum PermissionMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DenyReason {
-    HardDenyRule { rule_id: String },
+    HardDenyRule {
+        rule_id: String,
+    },
     NoReadEvidence,
     TestDeletionWithoutReplacement,
     OutsideSandbox,
     QuarantinedContent,
-    NeedsExplicitIntent { classification: ActionClassification },
+    NeedsExplicitIntent {
+        classification: ActionClassification,
+    },
     UsageLimitExceeded,
 }
 
@@ -87,8 +91,13 @@ pub enum PolicyTier {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PermissionDecision {
-    Allow { updated_input: Option<serde_json::Value> },
-    Deny { reason: DenyReason, interrupt: bool },
+    Allow {
+        updated_input: Option<serde_json::Value>,
+    },
+    Deny {
+        reason: DenyReason,
+        interrupt: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +109,6 @@ pub trait PermissionStrategy: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;
     async fn check(&self, ctx: &PermissionContext) -> Option<DenyReason>;
 }
-
 
 // ---------------------------------------------------------------------------
 // PermissionGate — the main permission decision engine
@@ -135,7 +143,12 @@ impl PermissionGate {
         policy.insert(ActionClassification::NetworkOut, PolicyTier::SoftDeny);
         policy.insert(ActionClassification::Config, PolicyTier::SoftDeny);
         policy.insert(ActionClassification::Safe, PolicyTier::Allow);
-        Self { mode, anti_slop_strategies: vec![], policy, history: vec![] }
+        Self {
+            mode,
+            anti_slop_strategies: vec![],
+            policy,
+            history: vec![],
+        }
     }
 
     pub fn add_strategy(&mut self, strategy: Box<dyn PermissionStrategy>) {
@@ -147,49 +160,78 @@ impl PermissionGate {
     }
 
     pub async fn evaluate(&mut self, ctx: &PermissionContext) -> PermissionDecision {
-        let tier = self.policy.get(&ctx.classification)
+        let tier = self
+            .policy
+            .get(&ctx.classification)
             .cloned()
             .unwrap_or(PolicyTier::SoftDeny);
 
         match tier {
             PolicyTier::HardDeny => {
-                return self.record_decision(ctx, PermissionDecision::Deny {
-                    reason: DenyReason::HardDenyRule { rule_id: "hard_deny_classification".into() },
-                    interrupt: false,
-                });
+                return self.record_decision(
+                    ctx,
+                    PermissionDecision::Deny {
+                        reason: DenyReason::HardDenyRule {
+                            rule_id: "hard_deny_classification".into(),
+                        },
+                        interrupt: false,
+                    },
+                );
             }
             PolicyTier::Allow => {
-                return self.record_decision(ctx, PermissionDecision::Allow { updated_input: None });
+                return self.record_decision(
+                    ctx,
+                    PermissionDecision::Allow {
+                        updated_input: None,
+                    },
+                );
             }
             PolicyTier::Environment => {
-                return self.record_decision(ctx, PermissionDecision::Allow { updated_input: None });
+                return self.record_decision(
+                    ctx,
+                    PermissionDecision::Allow {
+                        updated_input: None,
+                    },
+                );
             }
             PolicyTier::SoftDeny => {}
         }
 
         for strategy in &self.anti_slop_strategies {
             if let Some(reason) = strategy.check(ctx).await {
-                return self.record_decision(ctx, PermissionDecision::Deny { reason, interrupt: false });
+                return self.record_decision(
+                    ctx,
+                    PermissionDecision::Deny {
+                        reason,
+                        interrupt: false,
+                    },
+                );
             }
         }
 
         match self.mode {
-            PermissionMode::Yolo => PermissionDecision::Allow { updated_input: None },
-            PermissionMode::Plan | PermissionMode::Interactive => {
-                match ctx.classification {
-                    ActionClassification::Safe => PermissionDecision::Allow { updated_input: None },
-                    _ => PermissionDecision::Deny {
-                        reason: DenyReason::NeedsExplicitIntent {
-                            classification: ctx.classification.clone(),
-                        },
-                        interrupt: true,
+            PermissionMode::Yolo => PermissionDecision::Allow {
+                updated_input: None,
+            },
+            PermissionMode::Plan | PermissionMode::Interactive => match ctx.classification {
+                ActionClassification::Safe => PermissionDecision::Allow {
+                    updated_input: None,
+                },
+                _ => PermissionDecision::Deny {
+                    reason: DenyReason::NeedsExplicitIntent {
+                        classification: ctx.classification.clone(),
                     },
-                }
-            }
+                    interrupt: true,
+                },
+            },
         }
     }
 
-    fn record_decision(&mut self, ctx: &PermissionContext, decision: PermissionDecision) -> PermissionDecision {
+    fn record_decision(
+        &mut self,
+        ctx: &PermissionContext,
+        decision: PermissionDecision,
+    ) -> PermissionDecision {
         self.history.push(PermissionGateEvent {
             action_label: ctx.action_label.clone(),
             classification: ctx.classification.clone(),
@@ -213,9 +255,13 @@ pub struct NoReadEvidenceStrategy;
 
 #[async_trait::async_trait]
 impl PermissionStrategy for NoReadEvidenceStrategy {
-    fn name(&self) -> &str { "NoReadEvidence" }
+    fn name(&self) -> &str {
+        "NoReadEvidence"
+    }
     async fn check(&self, ctx: &PermissionContext) -> Option<DenyReason> {
-        if ctx.classification != ActionClassification::LocalWrite { return None; }
+        if ctx.classification != ActionClassification::LocalWrite {
+            return None;
+        }
         let target = ctx.tool_args.get("path").and_then(|v| v.as_str())?;
         let target_path = PathBuf::from(target);
         if !ctx.files_read_in_session.contains(&target_path) {
@@ -224,7 +270,6 @@ impl PermissionStrategy for NoReadEvidenceStrategy {
         None
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -245,14 +290,13 @@ mod tests {
         tool_args: HashMap<String, serde_json::Value>,
     ) -> PermissionContext {
         let sandbox = make_sandbox();
-        let sandbox2 = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
         PermissionContext {
             action_label: "test".into(),
             classification,
             tool_name: "test_tool".into(),
             tool_args,
             cwd: std::env::current_dir().unwrap(),
-            sandbox: sandbox2,
+            sandbox,
             files_read_in_session: vec![],
             permission_mode: mode,
             task: forge_core_security::containment::Trusted::new_internal("test task".into()),
@@ -273,7 +317,9 @@ mod tests {
                 assert!(!interrupt);
                 assert_eq!(
                     reason,
-                    DenyReason::HardDenyRule { rule_id: "hard_deny_classification".to_string() }
+                    DenyReason::HardDenyRule {
+                        rule_id: "hard_deny_classification".to_string()
+                    }
                 );
             }
             _ => panic!("HardDeny should block even in Yolo mode"),
@@ -347,7 +393,9 @@ mod tests {
             PermissionDecision::Deny { reason, .. } => {
                 assert_eq!(
                     reason,
-                    DenyReason::HardDenyRule { rule_id: "hard_deny_classification".to_string() }
+                    DenyReason::HardDenyRule {
+                        rule_id: "hard_deny_classification".to_string()
+                    }
                 );
             }
             _ => panic!("HardDeny override should block even Safe + Yolo"),
@@ -359,12 +407,11 @@ mod tests {
         let mut gate = PermissionGate::new(PermissionMode::Yolo);
         gate.add_strategy(Box::new(NoReadEvidenceStrategy));
         let mut args = HashMap::new();
-        args.insert("path".into(), serde_json::Value::String("unread_file.rs".into()));
-        let ctx = make_ctx(
-            ActionClassification::LocalWrite,
-            PermissionMode::Yolo,
-            args,
+        args.insert(
+            "path".into(),
+            serde_json::Value::String("unread_file.rs".into()),
         );
+        let ctx = make_ctx(ActionClassification::LocalWrite, PermissionMode::Yolo, args);
         let decision = tokio_test::block_on(gate.evaluate(&ctx));
         match decision {
             PermissionDecision::Deny { reason, .. } => {

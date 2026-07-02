@@ -56,7 +56,11 @@ pub struct AuditLog {
 
 impl AuditLog {
     pub fn new() -> Self {
-        Self { entries: vec![], path: None, tip_hash: None }
+        Self {
+            entries: vec![],
+            path: None,
+            tip_hash: None,
+        }
     }
 
     pub fn append(&mut self, event: AgentEvent) -> &AuditEntry {
@@ -65,7 +69,10 @@ impl AuditLog {
         let correlation = extract_correlation(&event);
         let mut entry = AuditEntry {
             stable_id: format!("audit-{:04}", sequence),
-            correlation, sequence, event, prev_hash,
+            correlation,
+            sequence,
+            event,
+            prev_hash,
             hash: String::new(),
             timestamp_iso: iso_now(),
         };
@@ -78,15 +85,23 @@ impl AuditLog {
     pub fn verify_chain(&self) -> bool {
         let mut expected_prev = String::new();
         for entry in &self.entries {
-            if entry.hash != entry.compute_hash() { return false; }
-            if entry.prev_hash != expected_prev { return false; }
+            if entry.hash != entry.compute_hash() {
+                return false;
+            }
+            if entry.prev_hash != expected_prev {
+                return false;
+            }
             expected_prev = entry.hash.clone();
         }
         true
     }
 }
 
-impl Default for AuditLog { fn default() -> Self { Self::new() } }
+impl Default for AuditLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub trait EventSink: Send + Sync {
     fn sink(&mut self, event: AgentEvent) -> AuditEntry;
@@ -100,7 +115,8 @@ impl EventSink for AuditLog {
 
 fn iso_now() -> String {
     let d = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = d.as_secs();
     let days = secs / 86400;
     let t = secs % 86400;
@@ -115,24 +131,30 @@ fn days_to_date(mut days: u64) -> (u64, u64, u64) {
     let mut y = 1970u64;
     loop {
         let diy = if is_leap(y) { 366 } else { 365 };
-        if days < diy { break; }
-        days -= diy; y += 1;
+        if days < diy {
+            break;
+        }
+        days -= diy;
+        y += 1;
     }
     let mdays = if is_leap(y) {
-        [31,29,31,30,31,30,31,31,30,31,30,31]
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     } else {
-        [31,28,31,30,31,30,31,31,30,31,30,31]
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     };
     let mut mo = 1u64;
     for &md in &mdays {
-        if days < md { break; }
-        days -= md; mo += 1;
+        if days < md {
+            break;
+        }
+        days -= md;
+        mo += 1;
     }
     (y, mo, days + 1)
 }
 
 fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 #[cfg(test)]

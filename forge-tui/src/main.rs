@@ -32,7 +32,11 @@ struct AppState {
 
 impl AppState {
     fn new() -> Self {
-        Self { events: Vec::new(), scroll: 0, run_start: None }
+        Self {
+            events: Vec::new(),
+            scroll: 0,
+            run_start: None,
+        }
     }
 
     fn push(&mut self, ev: &AgentEvent) {
@@ -53,9 +57,7 @@ impl AppState {
 // ── colour helpers ────────────────────────────────────────────────────────────
 fn event_style(ev: &AgentEvent) -> Style {
     match ev {
-        AgentEvent::RunStart(_) | AgentEvent::RunEnd(_) => {
-            Style::default().fg(EMERALD)
-        }
+        AgentEvent::RunStart(_) | AgentEvent::RunEnd(_) => Style::default().fg(EMERALD),
         AgentEvent::RunError(_) => Style::default().fg(RUBY).add_modifier(Modifier::BOLD),
         AgentEvent::Think(_) | AgentEvent::Act(_) | AgentEvent::Observe(_) => {
             Style::default().fg(CREAM)
@@ -98,7 +100,9 @@ fn event_summary(ev: &AgentEvent) -> String {
         AgentEvent::RunError(err) => format!("error: {}", err.error),
         AgentEvent::Think(t) => format!("{} tokens:{}", truncate(&t.thought, 60), t.tokens_used),
         AgentEvent::Act(a) => format!("action: {} tool:{}", truncate(&a.action, 30), a.tool_name),
-        AgentEvent::Observe(o) => format!("obs: {} exit:{}", truncate(&o.observation, 50), o.exit_code),
+        AgentEvent::Observe(o) => {
+            format!("obs: {} exit:{}", truncate(&o.observation, 50), o.exit_code)
+        }
         AgentEvent::Verify(v) => format!("gate:{} status:{}", v.gate, v.status),
         AgentEvent::FileEdit(fe) => format!("path:{} action:{}", fe.path, fe.action_type),
         AgentEvent::TokenUsage(tu) => {
@@ -143,8 +147,10 @@ fn ui(f: &mut Frame, state: &AppState) {
         Some(label) => format!(" RunStart → {} → Running…", label),
         None => " Forge TUI — awaiting events …".to_string(),
     };
-    let bread_line =
-        Line::from(Span::styled(bread_text, Style::default().fg(AMBER).bg(SLATE)));
+    let bread_line = Line::from(Span::styled(
+        bread_text,
+        Style::default().fg(AMBER).bg(SLATE),
+    ));
     f.render_widget(bread_line, chunks[0]);
 
     // event log — build items in reverse (newest first)
@@ -180,8 +186,8 @@ fn ui(f: &mut Frame, state: &AppState) {
             Vec::new()
         };
 
-        let display_log = List::new(display_items)
-            .block(Block::default().style(Style::default().bg(SLATE)));
+        let display_log =
+            List::new(display_items).block(Block::default().style(Style::default().bg(SLATE)));
         f.render_widget(display_log, list_area);
     } else {
         let empty = Paragraph::new("").style(Style::default().bg(SLATE));
@@ -195,8 +201,7 @@ fn ui(f: &mut Frame, state: &AppState) {
         " Events: {} | Latest: {} | [j/k] scroll  [q] quit ",
         total, latest_label
     );
-    let status_line =
-        Line::from(Span::styled(status, Style::default().fg(CREAM).bg(SLATE)));
+    let status_line = Line::from(Span::styled(status, Style::default().fg(CREAM).bg(SLATE)));
     f.render_widget(status_line, chunks[2]);
 }
 
@@ -277,4 +282,3 @@ fn run(
 
     Ok(())
 }
-

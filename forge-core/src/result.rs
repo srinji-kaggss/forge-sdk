@@ -66,9 +66,7 @@ impl FailureReason {
                 let truncated: String = detail.chars().take(80).collect();
                 format!("Convergence failed after {} nudges: {}", nudges, truncated)
             }
-            Self::MaxStepsReached => {
-                "Maximum step count reached without completing.".to_string()
-            }
+            Self::MaxStepsReached => "Maximum step count reached without completing.".to_string(),
             Self::VerificationFailed { gate, detail } => {
                 let truncated: String = detail.chars().take(80).collect();
                 format!("Verification gate '{}' failed: {}", gate, truncated)
@@ -115,7 +113,13 @@ impl ChangeManifest {
     ) -> Self {
         let s: String = summary.into();
         let truncated: String = s.chars().take(80).collect();
-        Self { files_changed, files_created, files_deleted, commands_run, summary: truncated }
+        Self {
+            files_changed,
+            files_created,
+            files_deleted,
+            commands_run,
+            summary: truncated,
+        }
     }
 }
 
@@ -133,8 +137,18 @@ pub struct VerificationEvidence {
 }
 
 impl VerificationEvidence {
-    pub fn new(gate: impl Into<String>, passed: bool, detail: impl Into<String>, event: Option<VerificationEvent>) -> Self {
-        Self { gate: gate.into(), passed, detail: detail.into(), event }
+    pub fn new(
+        gate: impl Into<String>,
+        passed: bool,
+        detail: impl Into<String>,
+        event: Option<VerificationEvent>,
+    ) -> Self {
+        Self {
+            gate: gate.into(),
+            passed,
+            detail: detail.into(),
+            event,
+        }
     }
 }
 
@@ -151,8 +165,16 @@ pub struct RollbackPlan {
 }
 
 impl RollbackPlan {
-    pub fn new(description: impl Into<String>, paths_to_restore: Vec<String>, commands: Vec<String>) -> Self {
-        Self { description: description.into(), paths_to_restore, commands }
+    pub fn new(
+        description: impl Into<String>,
+        paths_to_restore: Vec<String>,
+        commands: Vec<String>,
+    ) -> Self {
+        Self {
+            description: description.into(),
+            paths_to_restore,
+            commands,
+        }
     }
 }
 
@@ -290,12 +312,28 @@ mod tests {
     #[test]
     fn test_failure_reason_recoverable() {
         assert!(FailureReason::ModelError("".into()).is_recoverable());
-        assert!(FailureReason::AuthenticationFailure { provider: "".into(), detail: "".into() }.is_recoverable());
+        assert!(FailureReason::AuthenticationFailure {
+            provider: "".into(),
+            detail: "".into()
+        }
+        .is_recoverable());
         assert!(!FailureReason::UsageLimitExceeded.is_recoverable());
         assert!(!FailureReason::MaxStepsReached.is_recoverable());
-        assert!(!FailureReason::VerificationFailed { gate: "".into(), detail: "".into() }.is_recoverable());
-        assert!(!FailureReason::PermissionDenied { action: "".into(), reason: "".into() }.is_recoverable());
-        assert!(!FailureReason::ConvergenceFailure { nudges: 0, detail: "".into() }.is_recoverable());
+        assert!(!FailureReason::VerificationFailed {
+            gate: "".into(),
+            detail: "".into()
+        }
+        .is_recoverable());
+        assert!(!FailureReason::PermissionDenied {
+            action: "".into(),
+            reason: "".into()
+        }
+        .is_recoverable());
+        assert!(!FailureReason::ConvergenceFailure {
+            nudges: 0,
+            detail: "".into()
+        }
+        .is_recoverable());
     }
 
     #[test]

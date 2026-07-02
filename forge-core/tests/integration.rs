@@ -8,8 +8,7 @@ use tempfile::TempDir;
 use forge_core::agent::{Agent, AgentState, LifecycleAgent};
 use forge_core::config::ForgeConfig;
 use forge_core::permission::{
-    ActionClassification, PermissionContext, PermissionDecision, PermissionGate,
-    PermissionMode,
+    ActionClassification, PermissionContext, PermissionDecision, PermissionGate, PermissionMode,
 };
 use forge_core::port::{ModelError, ModelPort, ModelResponse, ToolCall, ToolSpec};
 use forge_core::verifier::VerifierPipeline;

@@ -80,8 +80,14 @@ mod tests {
     #[test]
     fn test_agent_step_round_trip() {
         let mut args = HashMap::new();
-        args.insert("path".into(), serde_json::Value::String("src/main.rs".into()));
-        args.insert("pattern".into(), serde_json::Value::String("fn main".into()));
+        args.insert(
+            "path".into(),
+            serde_json::Value::String("src/main.rs".into()),
+        );
+        args.insert(
+            "pattern".into(),
+            serde_json::Value::String("fn main".into()),
+        );
 
         let step = AgentStep::new(
             0,

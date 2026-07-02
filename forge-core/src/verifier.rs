@@ -149,7 +149,10 @@ pub struct VerificationBudget {
 
 impl VerificationBudget {
     pub fn new(remaining_cost: f64, remaining_tokens: u64) -> Self {
-        Self { remaining_cost, remaining_tokens }
+        Self {
+            remaining_cost,
+            remaining_tokens,
+        }
     }
 
     /// Returns `true` if the given gate should be skipped under budget pressure.
@@ -264,7 +267,9 @@ pub struct SyntaxCheckGate;
 
 #[async_trait::async_trait]
 impl VerificationGate for SyntaxCheckGate {
-    fn kind(&self) -> GateKind { GateKind::SyntaxCheck }
+    fn kind(&self) -> GateKind {
+        GateKind::SyntaxCheck
+    }
     async fn run(&self, _ctx: &VerificationContext) -> VerificationEvidence {
         // Phase 0: passthrough. Phase 1+ will parse files with tree-sitter
         VerificationEvidence::new(
@@ -284,7 +289,9 @@ pub struct AstParseGate;
 
 #[async_trait::async_trait]
 impl VerificationGate for AstParseGate {
-    fn kind(&self) -> GateKind { GateKind::AstParse }
+    fn kind(&self) -> GateKind {
+        GateKind::AstParse
+    }
     async fn run(&self, _ctx: &VerificationContext) -> VerificationEvidence {
         VerificationEvidence::new(
             GateKind::AstParse,
@@ -303,7 +310,9 @@ pub struct EntityValidationGate;
 
 #[async_trait::async_trait]
 impl VerificationGate for EntityValidationGate {
-    fn kind(&self) -> GateKind { GateKind::EntityValidation }
+    fn kind(&self) -> GateKind {
+        GateKind::EntityValidation
+    }
     async fn run(&self, _ctx: &VerificationContext) -> VerificationEvidence {
         // Phase 0: checks that all_edits refer to existing files
         let missing: Vec<String> = _ctx
@@ -318,7 +327,9 @@ impl VerificationGate for EntityValidationGate {
                 GateKind::EntityValidation,
                 "entity-default",
                 VerificationStatus::Passed,
-                GateFailureReason::NamedTargetMissing { target: String::new() },
+                GateFailureReason::NamedTargetMissing {
+                    target: String::new(),
+                },
                 "All target files exist",
                 0,
             )
@@ -327,7 +338,9 @@ impl VerificationGate for EntityValidationGate {
                 GateKind::EntityValidation,
                 "entity-default",
                 VerificationStatus::Failed,
-                GateFailureReason::NamedTargetMissing { target: missing.join(", ") },
+                GateFailureReason::NamedTargetMissing {
+                    target: missing.join(", "),
+                },
                 format!("Missing files: {}", missing.join(", ")),
                 0,
             )
@@ -341,7 +354,9 @@ pub struct ShellDryRunGate;
 
 #[async_trait::async_trait]
 impl VerificationGate for ShellDryRunGate {
-    fn kind(&self) -> GateKind { GateKind::ShellDryRun }
+    fn kind(&self) -> GateKind {
+        GateKind::ShellDryRun
+    }
     async fn run(&self, _ctx: &VerificationContext) -> VerificationEvidence {
         VerificationEvidence::new(
             GateKind::ShellDryRun,
@@ -360,7 +375,9 @@ pub struct SpecConformanceGate;
 
 #[async_trait::async_trait]
 impl VerificationGate for SpecConformanceGate {
-    fn kind(&self) -> GateKind { GateKind::SpecConformance }
+    fn kind(&self) -> GateKind {
+        GateKind::SpecConformance
+    }
     async fn run(&self, _ctx: &VerificationContext) -> VerificationEvidence {
         // Phase 0: passthrough. Phase 1+ will check output against spec JSON.
         VerificationEvidence::new(
@@ -380,7 +397,9 @@ pub struct SemanticCheckGate;
 
 #[async_trait::async_trait]
 impl VerificationGate for SemanticCheckGate {
-    fn kind(&self) -> GateKind { GateKind::SemanticCheck }
+    fn kind(&self) -> GateKind {
+        GateKind::SemanticCheck
+    }
     async fn run(&self, ctx: &VerificationContext) -> VerificationEvidence {
         // Phase 0: passthrough. Phase 1+ will call model_port to grade output.
         if ctx.model_port.is_none() {
@@ -406,7 +425,6 @@ impl VerificationGate for SemanticCheckGate {
         )
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -439,7 +457,12 @@ mod tests {
         assert_eq!(results.len(), 6);
         // First 5 gates pass (SyntaxCheck through SpecConformance)
         for r in results.iter().take(5) {
-            assert_eq!(r.status, VerificationStatus::Passed, "Gate {:?} should pass", r.gate);
+            assert_eq!(
+                r.status,
+                VerificationStatus::Passed,
+                "Gate {:?} should pass",
+                r.gate
+            );
         }
         // SemanticCheck is Skipped because model_port is None
         assert_eq!(results[5].status, VerificationStatus::Skipped);
@@ -453,13 +476,17 @@ mod tests {
         struct FailingGate;
         #[async_trait::async_trait]
         impl VerificationGate for FailingGate {
-            fn kind(&self) -> GateKind { GateKind::EntityValidation }
+            fn kind(&self) -> GateKind {
+                GateKind::EntityValidation
+            }
             async fn run(&self, _ctx: &VerificationContext) -> VerificationEvidence {
                 VerificationEvidence::new(
                     GateKind::EntityValidation,
                     "fail-test",
                     VerificationStatus::Failed,
-                    GateFailureReason::NamedTargetMissing { target: "test.rs".into() },
+                    GateFailureReason::NamedTargetMissing {
+                        target: "test.rs".into(),
+                    },
                     "Test failure",
                     0,
                 )
@@ -502,7 +529,10 @@ mod tests {
         );
         let results = pipeline.run_all(&ctx).await;
         // SemanticCheck should be Skipped
-        let semantic = results.iter().find(|r| r.gate == GateKind::SemanticCheck).unwrap();
+        let semantic = results
+            .iter()
+            .find(|r| r.gate == GateKind::SemanticCheck)
+            .unwrap();
         assert_eq!(semantic.status, VerificationStatus::Skipped);
         assert_eq!(semantic.detail, GateFailureReason::BudgetSkipped);
     }
@@ -519,7 +549,10 @@ mod tests {
         );
         let results = pipeline.run_all(&ctx).await;
         // EntityValidation should detect the missing file
-        let entity = results.iter().find(|r| r.gate == GateKind::EntityValidation).unwrap();
+        let entity = results
+            .iter()
+            .find(|r| r.gate == GateKind::EntityValidation)
+            .unwrap();
         // Entity validation may be passed or failed depending on file existence
         // We just verify it ran
         assert!(!entity.output.is_empty());
@@ -536,7 +569,10 @@ mod tests {
             None,
         );
         let results = pipeline.run_all(&ctx).await;
-        let semantic = results.iter().find(|r| r.gate == GateKind::SemanticCheck).unwrap();
+        let semantic = results
+            .iter()
+            .find(|r| r.gate == GateKind::SemanticCheck)
+            .unwrap();
         assert_eq!(semantic.status, VerificationStatus::Skipped);
         assert_eq!(semantic.detail, GateFailureReason::ModelNotConfigured);
     }

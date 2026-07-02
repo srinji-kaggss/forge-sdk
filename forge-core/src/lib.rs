@@ -17,8 +17,8 @@ pub mod guard;
 pub mod permission;
 pub mod port;
 pub mod renderer;
-pub mod router;
 pub mod result;
+pub mod router;
 pub mod session;
 pub mod step;
 pub mod tracer;
@@ -26,16 +26,13 @@ pub mod verifier;
 
 // -- re-exports: event -------------------------------------------------------
 pub use event::{
-    ActionEvent, AgentEvent, ConvergenceEvent, Correlation, DecisionEvent,
-    FileEditEvent, ObservationEvent, PermissionGateEvent, RunEndEvent,
-    RunErrorEvent, RunStartEvent, StateUpdateEvent, ThinkEvent,
-    TokenUsageEvent, VerificationEvent,
+    ActionEvent, AgentEvent, ConvergenceEvent, Correlation, DecisionEvent, FileEditEvent,
+    ObservationEvent, PermissionGateEvent, RunEndEvent, RunErrorEvent, RunStartEvent,
+    StateUpdateEvent, ThinkEvent, TokenUsageEvent, VerificationEvent,
 };
 
 // -- re-exports: result ------------------------------------------------------
-pub use result::{
-    AgentResult, ChangeManifest, FailureReason, RollbackPlan, VerificationEvidence,
-};
+pub use result::{AgentResult, ChangeManifest, FailureReason, RollbackPlan, VerificationEvidence};
 
 // -- re-exports: context -----------------------------------------------------
 pub use context::AgentContext;
@@ -44,7 +41,4 @@ pub use context::AgentContext;
 pub use step::AgentStep;
 
 // -- re-exports: port --------------------------------------------------------
-pub use port::{
-    ModelError, ModelPort, ModelResponse, ToolCall, ToolHandler, ToolResult,
-    ToolSpec,
-};
+pub use port::{ModelError, ModelPort, ModelResponse, ToolCall, ToolHandler, ToolResult, ToolSpec};
