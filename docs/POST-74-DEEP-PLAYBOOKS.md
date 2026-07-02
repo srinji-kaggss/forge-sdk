@@ -23,9 +23,12 @@ This folder turns that into executable engineering work. Do not reopen the produ
 | Forge Brain | Read-only bridge to semantic-memory-brain and the unified OKF index | Raw ingestion ownership or ad hoc writes to external indexes |
 | Forge UI | TUI/web/chat/control surfaces over the event stream | Hidden agent semantics that bypass the event stream |
 | Forge Tools | Native repo tools plus adapters to LGWKS and other semantic toolsets | Duplicate model law, duplicate audit log, duplicate memory substrate |
+| Forge Docs | Local auto-documentation, PULSE frame receipts, queryable handoffs, and doc/brain projections | Human-only manual documentation or frontier-model clerical summarization |
 | Forge Evals | SWE-bench, Terminal-Bench/Harbor, browser-engine field tests, lgwks transfer tests | Benchmark-only behavior that differs from normal `forge run` |
 
 ## Playbook Order
+
+Architecture note: [PULSE Auto-Documentation Spec](FORGE-PULSE-AUTO-DOCS.md) explains the product and system decisions behind playbook 7.
 
 1. [Product Thesis](playbooks/001-product-thesis.md)
 2. [Rust Repo-Driving Harness](playbooks/002-rust-repo-driving-harness.md)
@@ -33,6 +36,7 @@ This folder turns that into executable engineering work. Do not reopen the produ
 4. [Brain And Topological Payload](playbooks/004-brain-topological-payload.md)
 5. [Runtime UX And Control Surface](playbooks/005-runtime-ux-control-surface.md)
 6. [Evals And Field Tests](playbooks/006-evals-field-tests.md)
+7. [PULSE Auto-Documentation And Unified Query Brain](playbooks/007-pulse-auto-documentation-brain.md)
 
 ## Implementation Dispatch
 
@@ -51,6 +55,7 @@ the next three coding sessions:
 - Requested verification must run or the result must fail.
 - Every run must end with a typed `AgentResult` carrying `failure_reason` or evidence-backed success.
 - Every tool call must become an event and an `AgentStep`.
+- Every material event must be auto-documented by local reducers into a queryable receipt or an explicit discard reason.
 - External brain/index data is evidence, not authority.
 - The Python SDK can remain a reference surface, but the runtime hot path moves to Rust.
 
