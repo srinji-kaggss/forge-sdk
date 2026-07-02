@@ -155,7 +155,11 @@ impl ForgeConfig {
             None => {
                 let home = dirs_or_default();
                 let p = home.join(".forge").join("config.json");
-                if p.exists() { Some(p) } else { None }
+                if p.exists() {
+                    Some(p)
+                } else {
+                    None
+                }
             }
         };
 
@@ -283,8 +287,10 @@ mod tests {
 
         env::set_var("OPENROUTER_API_KEY", "sk-or-v1-should-not-clobber");
         let cfg2 = ForgeConfig::load(None).unwrap();
-        assert_eq!(cfg2.api_key, "forge-test-key-12345",
-            "api_key must NOT be overwritten by OPENROUTER_API_KEY");
+        assert_eq!(
+            cfg2.api_key, "forge-test-key-12345",
+            "api_key must NOT be overwritten by OPENROUTER_API_KEY"
+        );
 
         // -- test: save and reload ------------------------------------------------
         env::remove_var("FORGE_API_KEY");
@@ -292,12 +298,19 @@ mod tests {
         let config_path = tmp.path().join("config.json");
 
         let original = ForgeConfig {
-            provider: "openrouter".into(), model: "anthropic/claude-3.5-sonnet".into(),
-            api_key: "sk-or-v1-test".into(), base_url: "https://openrouter.ai/api/v1".into(),
-            temperature: 0.3, max_tokens: Some(4096), max_steps: 100,
-            cwd: PathBuf::from("/tmp/work"), eval_limit: Some(10),
-            eval_benchmark: "spec-bench".into(), trace_dir: PathBuf::from("/tmp/traces"),
-            audit_db: PathBuf::from("/tmp/audit.db"), config_file: None,
+            provider: "openrouter".into(),
+            model: "anthropic/claude-3.5-sonnet".into(),
+            api_key: "sk-or-v1-test".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            temperature: 0.3,
+            max_tokens: Some(4096),
+            max_steps: 100,
+            cwd: PathBuf::from("/tmp/work"),
+            eval_limit: Some(10),
+            eval_benchmark: "spec-bench".into(),
+            trace_dir: PathBuf::from("/tmp/traces"),
+            audit_db: PathBuf::from("/tmp/audit.db"),
+            config_file: None,
         };
         original.save(&config_path).unwrap();
         assert!(config_path.exists());
@@ -341,7 +354,10 @@ mod test_helpers {
     impl EnvGuard {
         pub(super) fn new(key: &str) -> Self {
             let old = env::var(key).ok();
-            Self { key: key.to_string(), old }
+            Self {
+                key: key.to_string(),
+                old,
+            }
         }
     }
     impl Drop for EnvGuard {
@@ -379,4 +395,3 @@ mod test_helpers {
         }
     }
 }
-

@@ -2,7 +2,7 @@
 ///
 /// Every event in the forge system carries a `Correlation` so that the full
 /// event stream can be traced, replayed, and audited as a hash chain.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Correlation {
     pub trace_id: String,
     pub run_id: String,
@@ -55,7 +55,14 @@ impl RunStartEvent {
         max_steps: u32,
         max_tokens: u64,
     ) -> Self {
-        Self { correlation, task: task.into(), model: model.into(), provider: provider.into(), max_steps, max_tokens }
+        Self {
+            correlation,
+            task: task.into(),
+            model: model.into(),
+            provider: provider.into(),
+            max_steps,
+            max_tokens,
+        }
     }
 }
 
@@ -80,7 +87,14 @@ impl RunEndEvent {
         total_cost: f64,
         duration_ms: u64,
     ) -> Self {
-        Self { correlation, success, total_steps, total_tokens, total_cost, duration_ms }
+        Self {
+            correlation,
+            success,
+            total_steps,
+            total_tokens,
+            total_cost,
+            duration_ms,
+        }
     }
 }
 
@@ -93,8 +107,16 @@ pub struct RunErrorEvent {
 }
 
 impl RunErrorEvent {
-    pub fn new(correlation: Correlation, error: impl Into<String>, failure_reason: impl Into<String>) -> Self {
-        Self { correlation, error: error.into(), failure_reason: failure_reason.into() }
+    pub fn new(
+        correlation: Correlation,
+        error: impl Into<String>,
+        failure_reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            error: error.into(),
+            failure_reason: failure_reason.into(),
+        }
     }
 }
 
@@ -108,12 +130,16 @@ pub struct ThinkEvent {
 
 impl ThinkEvent {
     pub fn new(correlation: Correlation, thought: impl Into<String>, tokens_used: u64) -> Self {
-        Self { correlation, thought: thought.into(), tokens_used }
+        Self {
+            correlation,
+            thought: thought.into(),
+            tokens_used,
+        }
     }
 }
 
 /// Fired when the agent performs an action (tool call).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ActionEvent {
     pub correlation: Correlation,
     pub action: String,
@@ -122,13 +148,23 @@ pub struct ActionEvent {
 }
 
 impl ActionEvent {
-    pub fn new(correlation: Correlation, action: impl Into<String>, action_input: impl Into<String>, tool_name: impl Into<String>) -> Self {
-        Self { correlation, action: action.into(), action_input: action_input.into(), tool_name: tool_name.into() }
+    pub fn new(
+        correlation: Correlation,
+        action: impl Into<String>,
+        action_input: impl Into<String>,
+        tool_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            action: action.into(),
+            action_input: action_input.into(),
+            tool_name: tool_name.into(),
+        }
     }
 }
 
 /// Fired when the agent receives an observation (tool output).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ObservationEvent {
     pub correlation: Correlation,
     pub observation: String,
@@ -137,7 +173,11 @@ pub struct ObservationEvent {
 
 impl ObservationEvent {
     pub fn new(correlation: Correlation, observation: impl Into<String>, exit_code: i32) -> Self {
-        Self { correlation, observation: observation.into(), exit_code }
+        Self {
+            correlation,
+            observation: observation.into(),
+            exit_code,
+        }
     }
 }
 
@@ -151,8 +191,18 @@ pub struct VerificationEvent {
 }
 
 impl VerificationEvent {
-    pub fn new(correlation: Correlation, gate: impl Into<String>, status: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { correlation, gate: gate.into(), status: status.into(), detail: detail.into() }
+    pub fn new(
+        correlation: Correlation,
+        gate: impl Into<String>,
+        status: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            gate: gate.into(),
+            status: status.into(),
+            detail: detail.into(),
+        }
     }
 }
 
@@ -166,8 +216,18 @@ pub struct FileEditEvent {
 }
 
 impl FileEditEvent {
-    pub fn new(correlation: Correlation, path: impl Into<String>, diff: impl Into<String>, action_type: impl Into<String>) -> Self {
-        Self { correlation, path: path.into(), diff: diff.into(), action_type: action_type.into() }
+    pub fn new(
+        correlation: Correlation,
+        path: impl Into<String>,
+        diff: impl Into<String>,
+        action_type: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            path: path.into(),
+            diff: diff.into(),
+            action_type: action_type.into(),
+        }
     }
 }
 
@@ -182,8 +242,20 @@ pub struct TokenUsageEvent {
 }
 
 impl TokenUsageEvent {
-    pub fn new(correlation: Correlation, tokens_used: u64, cost: f64, total_tokens: u64, total_cost: f64) -> Self {
-        Self { correlation, tokens_used, cost, total_tokens, total_cost }
+    pub fn new(
+        correlation: Correlation,
+        tokens_used: u64,
+        cost: f64,
+        total_tokens: u64,
+        total_cost: f64,
+    ) -> Self {
+        Self {
+            correlation,
+            tokens_used,
+            cost,
+            total_tokens,
+            total_cost,
+        }
     }
 }
 
@@ -197,8 +269,18 @@ pub struct StateUpdateEvent {
 }
 
 impl StateUpdateEvent {
-    pub fn new(correlation: Correlation, key: impl Into<String>, old_value: impl Into<String>, new_value: impl Into<String>) -> Self {
-        Self { correlation, key: key.into(), old_value: old_value.into(), new_value: new_value.into() }
+    pub fn new(
+        correlation: Correlation,
+        key: impl Into<String>,
+        old_value: impl Into<String>,
+        new_value: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            key: key.into(),
+            old_value: old_value.into(),
+            new_value: new_value.into(),
+        }
     }
 }
 
@@ -212,8 +294,18 @@ pub struct DecisionEvent {
 }
 
 impl DecisionEvent {
-    pub fn new(correlation: Correlation, decision: impl Into<String>, confidence: f64, alternatives: Vec<String>) -> Self {
-        Self { correlation, decision: decision.into(), confidence, alternatives }
+    pub fn new(
+        correlation: Correlation,
+        decision: impl Into<String>,
+        confidence: f64,
+        alternatives: Vec<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            decision: decision.into(),
+            confidence,
+            alternatives,
+        }
     }
 }
 
@@ -227,7 +319,11 @@ pub struct ConvergenceEvent {
 
 impl ConvergenceEvent {
     pub fn new(correlation: Correlation, converged: bool, evidence: impl Into<String>) -> Self {
-        Self { correlation, converged, evidence: evidence.into() }
+        Self {
+            correlation,
+            converged,
+            evidence: evidence.into(),
+        }
     }
 }
 
@@ -241,7 +337,17 @@ pub struct PermissionGateEvent {
 }
 
 impl PermissionGateEvent {
-    pub fn new(correlation: Correlation, action: impl Into<String>, verdict: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self { correlation, action: action.into(), verdict: verdict.into(), reason: reason.into() }
+    pub fn new(
+        correlation: Correlation,
+        action: impl Into<String>,
+        verdict: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            action: action.into(),
+            verdict: verdict.into(),
+            reason: reason.into(),
+        }
     }
 }

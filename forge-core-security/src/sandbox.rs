@@ -29,7 +29,10 @@ pub struct SandboxRoot {
 impl Clone for SandboxRoot {
     fn clone(&self) -> Self {
         Self {
-            dir: self.dir.try_clone().expect("SandboxRoot::clone: Dir::try_clone failed"),
+            dir: self
+                .dir
+                .try_clone()
+                .expect("SandboxRoot::clone: Dir::try_clone failed"),
         }
     }
 }
@@ -61,7 +64,10 @@ impl SandboxRoot {
     ///
     /// Convenience wrapper combining `open()` + `read_to_end()`.
     /// Returns `(File, Vec<u8>)` so the caller can inspect the File handle.
-    pub fn read_file(&self, relative_path: impl AsRef<Path>) -> io::Result<(cap_std::fs::File, Vec<u8>)> {
+    pub fn read_file(
+        &self,
+        relative_path: impl AsRef<Path>,
+    ) -> io::Result<(cap_std::fs::File, Vec<u8>)> {
         let mut file = self.open(relative_path)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;

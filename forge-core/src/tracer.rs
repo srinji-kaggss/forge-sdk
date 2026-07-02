@@ -5,10 +5,19 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SpanKind { Llm, Tool, Agent, Internal }
+pub enum SpanKind {
+    Llm,
+    Tool,
+    Agent,
+    Internal,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SpanStatus { Ok, Error, Unset }
+pub enum SpanStatus {
+    Ok,
+    Error,
+    Unset,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpanEvent {
@@ -33,14 +42,22 @@ pub struct Span {
 
 impl Span {
     pub fn finish(&mut self, status: SpanStatus) {
-        self.end_time_ms = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64);
+        self.end_time_ms = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
+        );
         self.status = status;
     }
 
     pub fn add_event(&mut self, name: &str, attributes: HashMap<String, serde_json::Value>) {
         self.events.push(SpanEvent {
             name: name.to_string(),
-            timestamp_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64,
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
             attributes,
         });
     }
@@ -55,16 +72,27 @@ pub struct Tracer {
 }
 
 impl Tracer {
-    pub fn new() -> Self { Self { spans: Vec::new() } }
+    pub fn new() -> Self {
+        Self { spans: Vec::new() }
+    }
 
-    pub fn start_span(&mut self, name: &str, kind: SpanKind, trace_id: &str, parent_span_id: Option<String>) -> Span {
+    pub fn start_span(
+        &mut self,
+        name: &str,
+        kind: SpanKind,
+        trace_id: &str,
+        parent_span_id: Option<String>,
+    ) -> Span {
         let span = Span {
             span_id: Uuid::new_v4().to_string(),
             trace_id: trace_id.to_string(),
             parent_span_id,
             name: name.to_string(),
             kind,
-            start_time_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64,
+            start_time_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
             end_time_ms: None,
             attributes: HashMap::new(),
             events: vec![],
@@ -72,6 +100,12 @@ impl Tracer {
         };
         self.spans.push(span.clone());
         span
+    }
+}
+
+impl Default for Tracer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -129,7 +163,12 @@ mod tests {
 
     #[test]
     fn test_span_kind_serde() {
-        let kinds = vec![SpanKind::Llm, SpanKind::Tool, SpanKind::Agent, SpanKind::Internal];
+        let kinds = vec![
+            SpanKind::Llm,
+            SpanKind::Tool,
+            SpanKind::Agent,
+            SpanKind::Internal,
+        ];
         for k in kinds {
             let json = serde_json::to_string(&k).unwrap();
             let back: SpanKind = serde_json::from_str(&json).unwrap();

@@ -44,8 +44,16 @@ pub struct ToolSpec {
 }
 
 impl ToolSpec {
-    pub fn new(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self {
-        Self { name: name.into(), description: description.into(), parameters }
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+        }
     }
 }
 
@@ -58,8 +66,16 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    pub fn new(name: impl Into<String>, arguments: HashMap<String, serde_json::Value>, id: Option<String>) -> Self {
-        Self { name: name.into(), arguments, id }
+    pub fn new(
+        name: impl Into<String>,
+        arguments: HashMap<String, serde_json::Value>,
+        id: Option<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            arguments,
+            id,
+        }
     }
 }
 
@@ -73,7 +89,11 @@ pub struct ToolResult {
 
 impl ToolResult {
     pub fn new(call_id: Option<String>, success: bool, output: impl Into<String>) -> Self {
-        Self { call_id, success, output: output.into() }
+        Self {
+            call_id,
+            success,
+            output: output.into(),
+        }
     }
 }
 
@@ -92,12 +112,26 @@ pub struct ModelResponse {
 }
 
 impl ModelResponse {
-    pub fn new(content: impl Into<String>, tool_calls: Vec<ToolCall>, input_tokens: u64, output_tokens: u64, model: impl Into<String>) -> Self {
-        Self { content: content.into(), tool_calls, input_tokens, output_tokens, model: model.into() }
+    pub fn new(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+        input_tokens: u64,
+        output_tokens: u64,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            tool_calls,
+            input_tokens,
+            output_tokens,
+            model: model.into(),
+        }
     }
 
     /// Total tokens consumed for this response.
-    pub fn total_tokens(&self) -> u64 { self.input_tokens + self.output_tokens }
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +145,17 @@ impl ModelResponse {
 /// implement this trait.
 #[async_trait]
 pub trait ModelPort: Send + Sync {
-    async fn generate(&self, system: &str, messages: &[HashMap<String, String>]) -> Result<ModelResponse, ModelError>;
-    async fn generate_with_tools(&self, system: &str, messages: &[HashMap<String, String>], tools: &[ToolSpec]) -> Result<ModelResponse, ModelError>;
+    async fn generate(
+        &self,
+        system: &str,
+        messages: &[HashMap<String, String>],
+    ) -> Result<ModelResponse, ModelError>;
+    async fn generate_with_tools(
+        &self,
+        system: &str,
+        messages: &[HashMap<String, String>],
+        tools: &[ToolSpec],
+    ) -> Result<ModelResponse, ModelError>;
     async fn count_tokens(&self, text: &str) -> Result<u64, ModelError>;
 }
 

@@ -27,6 +27,7 @@ impl<T> Tainted<T> {
     /// This is intentionally `pub(crate)` to enforce the constructor discipline:
     /// only I/O modules within forge-core-security can produce `Tainted` values;
     /// everything else receives them and must call `contain()`.
+    #[cfg(test)]
     pub(crate) fn new(value: T) -> Self {
         Self(value)
     }
@@ -114,9 +115,7 @@ pub enum ContainmentResult<T> {
         risk_score: f32,
     },
     /// Value was rejected — quarantined, no inner value accessible.
-    Quarantined {
-        risk_score: f32,
-    },
+    Quarantined { risk_score: f32 },
 }
 
 impl<T> ContainmentResult<T> {
@@ -165,7 +164,6 @@ pub enum Category {
     NetworkOrigin,
 }
 
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -199,7 +197,7 @@ mod tests {
     #[test]
     fn test_tainted_no_public_constructor() {
         let tainted = Tainted::new(42u64);
-        assert_eq!(tainted.contain().is_safe(), true);
+        assert!(tainted.contain().is_safe());
     }
 
     #[test]

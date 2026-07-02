@@ -1,15 +1,24 @@
+use forge_core_security::containment::{Tainted, Trusted};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
+
 /// Ported from src/forge_sdk/cli/session.py::SessionState.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Task is Trusted<String> (verified input), tool calls and files are
+/// Vec<Tainted<String>> (user-supplied, potentially unsafe).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     pub session_id: String,
-    pub task: String,
+    /// The agent's task — wrapped in Trusted because it's the authoritative
+    /// instruction that all actions derive from.
+    pub task: Trusted<String>,
     pub model: String,
     pub step_count: u32,
-    pub tool_calls_made: Vec<String>,
-    pub files_touched: Vec<String>,
+    /// Tool calls made during the session — wrapped in Tainted since they
+    /// come from the model (external/untrusted source).
+    pub tool_calls_made: Vec<Tainted<String>>,
+    /// Files touched — wrapped in Tainted since paths come from model output.
+    pub files_touched: Vec<Tainted<String>>,
     pub errors: Vec<String>,
     pub token_usage: HashMap<String, serde_json::Value>,
     pub cost_usd: f64,
@@ -56,12 +65,10 @@ pub fn checkpoint_save(
         .as_secs_f64();
     let file_name = format!("{}.json", state.session_id);
     let file_path = checkpoint_dir.join(&file_name);
-    let json = serde_json::to_string_pretty(&state)
-        .map_err(|e| SessionError::Serde(e.to_string()))?;
-    std::fs::create_dir_all(checkpoint_dir)
-        .map_err(|e| SessionError::Io(e.to_string()))?;
-    std::fs::write(&file_path, &json)
-        .map_err(|e| SessionError::Io(e.to_string()))?;
+    let json =
+        serde_json::to_string_pretty(&state).map_err(|e| SessionError::Serde(e.to_string()))?;
+    std::fs::create_dir_all(checkpoint_dir).map_err(|e| SessionError::Io(e.to_string()))?;
+    std::fs::write(&file_path, &json).map_err(|e| SessionError::Io(e.to_string()))?;
     // Prune: keep only max_checkpoints most recent
     let mut entries: Vec<_> = std::fs::read_dir(checkpoint_dir)
         .map_err(|e| SessionError::Io(e.to_string()))?
@@ -85,10 +92,10 @@ pub fn checkpoint_restore(
     // Exact match first
     let exact_path = checkpoint_dir.join(format!("{}.json", session_id));
     if exact_path.exists() {
-        let data = std::fs::read_to_string(&exact_path)
-            .map_err(|e| SessionError::Io(e.to_string()))?;
-        let state: SessionState = serde_json::from_str(&data)
-            .map_err(|e| SessionError::Serde(e.to_string()))?;
+        let data =
+            std::fs::read_to_string(&exact_path).map_err(|e| SessionError::Io(e.to_string()))?;
+        let state: SessionState =
+            serde_json::from_str(&data).map_err(|e| SessionError::Serde(e.to_string()))?;
         return Ok(Some(state));
     }
     // Partial-match glob fallback: {session_id}*.json, most recent wins
@@ -106,12 +113,11 @@ pub fn checkpoint_restore(
             }
         }
     }
-    candidates.sort_by(|a, b| b.0.cmp(&a.0)); // most recent first
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0)); // most recent first
     if let Some((_, path)) = candidates.into_iter().next() {
-        let data = std::fs::read_to_string(&path)
-            .map_err(|e| SessionError::Io(e.to_string()))?;
-        let state: SessionState = serde_json::from_str(&data)
-            .map_err(|e| SessionError::Serde(e.to_string()))?;
+        let data = std::fs::read_to_string(&path).map_err(|e| SessionError::Io(e.to_string()))?;
+        let state: SessionState =
+            serde_json::from_str(&data).map_err(|e| SessionError::Serde(e.to_string()))?;
         return Ok(Some(state));
     }
     Ok(None)
@@ -127,7 +133,7 @@ pub fn list_checkpoints(checkpoint_dir: &Path) -> Vec<SessionSummary> {
                     if let Ok(state) = serde_json::from_str::<SessionState>(&data) {
                         summaries.push(SessionSummary {
                             session_id: state.session_id,
-                            task: state.task.chars().take(80).collect(),
+                            task: state.task.as_inner().chars().take(80).collect(),
                             steps: state.step_count,
                             timestamp: state.timestamp,
                             file: path,
@@ -137,6 +143,10 @@ pub fn list_checkpoints(checkpoint_dir: &Path) -> Vec<SessionSummary> {
             }
         }
     }
-    summaries.sort_by(|a, b| b.timestamp.partial_cmp(&a.timestamp).unwrap_or(std::cmp::Ordering::Equal));
+    summaries.sort_by(|a, b| {
+        b.timestamp
+            .partial_cmp(&a.timestamp)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     summaries
 }

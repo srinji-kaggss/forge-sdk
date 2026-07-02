@@ -6,6 +6,9 @@ use tokio::time::sleep;
 use crate::port::{ModelResponse, ToolSpec};
 use crate::result::FailureReason;
 
+type ModelCaller =
+    dyn Fn(&str, &[ToolSpec], &str) -> Result<ModelResponse, RouteFailure> + Send + Sync;
+
 // ---------------------------------------------------------------------------
 // RouteFailure — discriminators for the model-caller closure
 // ---------------------------------------------------------------------------
@@ -42,16 +45,13 @@ pub struct AutoRouter {
     /// Models that returned `NotFound` — never retried this session.
     dead_this_session: HashSet<String>,
     /// Model-caller closure: `(prompt, tools, model_id) -> Result<ModelResponse, RouteFailure>`
-    caller: Box<dyn Fn(&str, &[ToolSpec], &str) -> Result<ModelResponse, RouteFailure> + Send + Sync>,
+    caller: Box<ModelCaller>,
 }
 
 impl AutoRouter {
     /// Create a new `AutoRouter` with the given candidate model IDs
     /// and a caller closure that performs the actual model invocation.
-    pub fn new(
-        candidates: Vec<String>,
-        caller: Box<dyn Fn(&str, &[ToolSpec], &str) -> Result<ModelResponse, RouteFailure> + Send + Sync>,
-    ) -> Self {
+    pub fn new(candidates: Vec<String>, caller: Box<ModelCaller>) -> Self {
         Self {
             candidates,
             dead_this_session: HashSet::new(),
@@ -91,7 +91,9 @@ impl AutoRouter {
             match (self.caller)(prompt, tools, model) {
                 Ok(response) => return Ok((response, model.clone())),
 
-                Err(RouteFailure::RateLimited { retry_after_seconds }) => {
+                Err(RouteFailure::RateLimited {
+                    retry_after_seconds,
+                }) => {
                     // Sleep once, then retry the same model exactly once.
                     sleep(Duration::from_secs(retry_after_seconds)).await;
                     match (self.caller)(prompt, tools, model) {
@@ -116,7 +118,9 @@ impl AutoRouter {
             }
         }
 
-        Err(FailureReason::ModelError("all models exhausted".to_string()))
+        Err(FailureReason::ModelError(
+            "all models exhausted".to_string(),
+        ))
     }
 
     // -- test helpers -------------------------------------------------------
@@ -157,13 +161,13 @@ mod tests {
     #[tokio::test]
     async fn test_route_not_found() {
         let candidates = vec!["model-a".into(), "model-b".into()];
-        let caller = Box::new(|_prompt: &str, _tools: &[ToolSpec], model: &str| {
-            match model {
+        let caller = Box::new(
+            |_prompt: &str, _tools: &[ToolSpec], model: &str| match model {
                 "model-a" => Err(RouteFailure::NotFound),
                 "model-b" => Ok(make_response("model-b")),
                 _ => panic!("unexpected model: {model}"),
-            }
-        });
+            },
+        );
 
         let mut router = AutoRouter::new(candidates, caller);
         let (resp, used) = router.dispatch("hello", &no_tools()).await.unwrap();
@@ -189,7 +193,9 @@ mod tests {
         let caller = Box::new(move |_prompt: &str, _tools: &[ToolSpec], model: &str| {
             let n = count.fetch_add(1, Ordering::SeqCst);
             match n {
-                0 => Err(RouteFailure::RateLimited { retry_after_seconds: 0 }),
+                0 => Err(RouteFailure::RateLimited {
+                    retry_after_seconds: 0,
+                }),
                 1 => Ok(make_response(model)),
                 _ => panic!("unexpected call #{n}"),
             }
@@ -208,18 +214,21 @@ mod tests {
     #[tokio::test]
     async fn test_route_all_exhausted() {
         let candidates = vec!["model-a".into(), "model-b".into()];
-        let caller = Box::new(|_prompt: &str, _tools: &[ToolSpec], model: &str| {
-            match model {
+        let caller = Box::new(
+            |_prompt: &str, _tools: &[ToolSpec], model: &str| match model {
                 "model-a" => Err(RouteFailure::Other("bad request".into())),
                 "model-b" => Err(RouteFailure::Other("server error".into())),
                 _ => panic!("unexpected model: {model}"),
-            }
-        });
+            },
+        );
 
         let mut router = AutoRouter::new(candidates, caller);
         let err = router.dispatch("hello", &no_tools()).await.unwrap_err();
 
-        assert_eq!(err, FailureReason::ModelError("all models exhausted".into()));
+        assert_eq!(
+            err,
+            FailureReason::ModelError("all models exhausted".into())
+        );
     }
 
     // -- test: model name surfaced in Ok tuple ------------------------------
@@ -227,9 +236,8 @@ mod tests {
     #[tokio::test]
     async fn test_route_model_name_surfaced() {
         let candidates = vec!["claude-sonnet-4".into()];
-        let caller = Box::new(|_prompt: &str, _tools: &[ToolSpec], model: &str| {
-            Ok(make_response(model))
-        });
+        let caller =
+            Box::new(|_prompt: &str, _tools: &[ToolSpec], model: &str| Ok(make_response(model)));
 
         let mut router = AutoRouter::new(candidates, caller);
         let (resp, used) = router.dispatch("hello", &no_tools()).await.unwrap();

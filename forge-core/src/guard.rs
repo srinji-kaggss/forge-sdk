@@ -48,16 +48,27 @@ impl LoopGuard {
         if self.convergence_nudges > self.convergence_threshold {
             return Err(FailureReason::ConvergenceFailure {
                 nudges: self.convergence_nudges,
-                detail: format!("Model not converging after {} nudges", self.convergence_nudges),
+                detail: format!(
+                    "Model not converging after {} nudges",
+                    self.convergence_nudges
+                ),
             });
         }
         Ok(())
     }
 
-    pub fn step_count(&self) -> u32 { self.step_count }
-    pub fn total_tokens(&self) -> u64 { self.total_tokens }
-    pub fn total_cost(&self) -> f64 { self.total_cost }
-    pub fn convergence_nudges(&self) -> u32 { self.convergence_nudges }
+    pub fn step_count(&self) -> u32 {
+        self.step_count
+    }
+    pub fn total_tokens(&self) -> u64 {
+        self.total_tokens
+    }
+    pub fn total_cost(&self) -> f64 {
+        self.total_cost
+    }
+    pub fn convergence_nudges(&self) -> u32 {
+        self.convergence_nudges
+    }
 }
 
 #[cfg(test)]
