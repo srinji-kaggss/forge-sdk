@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use tempfile::TempDir;
 
 use forge_core::agent::{Agent, AgentState, LifecycleAgent};
 use forge_core::config::ForgeConfig;
@@ -100,6 +100,7 @@ async fn test_agent_loop_completes() {
         "Expected 0 steps when model makes no tool calls, got {}",
         result.total_steps
     );
+    assert_eq!(result.output, "Hello, I have completed the task.");
 }
 
 // ---------------------------------------------------------------------------
@@ -137,8 +138,9 @@ async fn test_permission_yolo_accepts() {
 
 #[test]
 fn test_config_roundtrip() {
-    let tmp_dir = TempDir::new().unwrap();
-    let config_path = tmp_dir.path().join("config.json");
+    let tmp_dir = unique_temp_dir("forge-config-roundtrip");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let config_path = tmp_dir.join("config.json");
 
     let original = ForgeConfig {
         provider: "openrouter".to_string(),
@@ -182,4 +184,14 @@ fn test_config_roundtrip() {
         Some(config_path.clone()),
         "config_file should be set to the path loaded from"
     );
+
+    let _ = std::fs::remove_dir_all(tmp_dir);
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
 }
