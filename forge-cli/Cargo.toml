@@ -9,5 +9,5 @@ forge-core = { path = "../forge-core" }
 forge-core-security = { path = "../forge-core-security" }
 forge-providers = { path = "../forge-providers" }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "process"] }
 serde_json = "1"
