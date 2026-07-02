@@ -35,7 +35,10 @@ impl BrainQuery {
     pub fn new(task: impl Into<String>) -> Self {
         Self {
             task: task.into(),
-            cwd: std::env::current_dir().unwrap_or_default().to_string_lossy().to_string(),
+            cwd: std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
             repo: None,
             domains: vec![],
             max_results: 10,

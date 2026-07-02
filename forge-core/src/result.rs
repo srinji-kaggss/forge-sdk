@@ -106,9 +106,7 @@ impl FailureReason {
             Self::NoEdit => {
                 "Edit task ended with no edits and no explicit impossible reason.".to_string()
             }
-            Self::VerificationNotRun => {
-                "Verification was requested but did not run.".to_string()
-            }
+            Self::VerificationNotRun => "Verification was requested but did not run.".to_string(),
             Self::UnacknowledgedToolFailure(detail) => {
                 let truncated: String = detail.chars().take(80).collect();
                 format!("Tool failure unacknowledged in final answer: {}", truncated)

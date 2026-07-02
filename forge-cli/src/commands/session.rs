@@ -50,7 +50,10 @@ pub async fn execute(args: &SessionArgs) -> Result<String, String> {
             for s in &summaries {
                 output.push_str(&format!(
                     "{} | steps: {} | task: {} | file: {}\n",
-                    s.session_id, s.steps, s.task, s.file.display()
+                    s.session_id,
+                    s.steps,
+                    s.task,
+                    s.file.display()
                 ));
             }
             Ok(output.trim().to_string())

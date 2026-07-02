@@ -16,7 +16,9 @@ impl FromStr for OutputFormat {
             "text" => Ok(OutputFormat::Text),
             "json" => Ok(OutputFormat::Json),
             "stream-json" => Ok(OutputFormat::StreamJson),
-            other => Err(format!("Unknown output format: '{other}'. Use: text, json, or stream-json")),
+            other => Err(format!(
+                "Unknown output format: '{other}'. Use: text, json, or stream-json"
+            )),
         }
     }
 }
@@ -24,9 +26,8 @@ impl FromStr for OutputFormat {
 impl OutputFormat {
     pub fn render(&self, value: &serde_json::Value) -> String {
         match self {
-            OutputFormat::Json | OutputFormat::StreamJson => {
-                serde_json::to_string_pretty(value).unwrap_or_else(|e| format!("Serialization error: {e}"))
-            }
+            OutputFormat::Json | OutputFormat::StreamJson => serde_json::to_string_pretty(value)
+                .unwrap_or_else(|e| format!("Serialization error: {e}")),
             OutputFormat::Text => {
                 format!("{value:}")
             }
@@ -42,7 +43,10 @@ mod tests {
     fn test_output_format_parse() {
         assert_eq!("text".parse::<OutputFormat>().unwrap(), OutputFormat::Text);
         assert_eq!("json".parse::<OutputFormat>().unwrap(), OutputFormat::Json);
-        assert_eq!("stream-json".parse::<OutputFormat>().unwrap(), OutputFormat::StreamJson);
+        assert_eq!(
+            "stream-json".parse::<OutputFormat>().unwrap(),
+            OutputFormat::StreamJson
+        );
         assert!("xml".parse::<OutputFormat>().is_err());
     }
 

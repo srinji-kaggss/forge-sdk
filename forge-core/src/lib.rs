@@ -32,8 +32,8 @@ pub use event::{
     ActionEvent, AgentEvent, ConvergenceEvent, Correlation, DecisionEvent, FileEditEvent,
     ModelRequestEvent, ModelResponseEvent, ModelUsageEvent, ObservationEvent,
     PermissionDecisionEvent, PermissionGateEvent, PermissionRequestEvent, RunEndEvent,
-    RunErrorEvent, RunStartEvent, StateUpdateEvent, ThinkEvent, TokenUsageEvent,
-    ToolCallEvent, ToolResultEvent, VerificationEvent, VerifyEndEvent, VerifyStartEvent,
+    RunErrorEvent, RunStartEvent, StateUpdateEvent, ThinkEvent, TokenUsageEvent, ToolCallEvent,
+    ToolResultEvent, VerificationEvent, VerifyEndEvent, VerifyStartEvent,
 };
 
 // -- re-exports: result ------------------------------------------------------

@@ -5,7 +5,6 @@
 /// strictness, user preference claims, and law bundles.
 ///
 /// True activation steering comes later for compatible model ports.
-
 use serde::{Deserialize, Serialize};
 
 /// Complete steering profile for a run.
@@ -79,7 +78,11 @@ impl SteeringProfile {
     pub fn plan_mode() -> Self {
         Self {
             mode: "plan".into(),
-            denied_tools: vec!["write_file".into(), "patch_file".into(), "run_command".into()],
+            denied_tools: vec![
+                "write_file".into(),
+                "patch_file".into(),
+                "run_command".into(),
+            ],
             evidence_depth: EvidenceDepth::Full,
             verification_strictness: VerificationStrictness::Normal,
             ..Self::default()

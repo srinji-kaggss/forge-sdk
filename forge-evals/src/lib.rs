@@ -1,4 +1,3 @@
-
 //! Forge evals — evaluation infrastructure for ACI, field tests, and benchmarks.
 ///
 /// Per Playbook 006, the eval ladder is:
@@ -11,7 +10,6 @@
 /// E6: SWE-bench Lite (real GitHub issue fixing) — TBD
 /// E7: Terminal-Bench/Harbor (terminal task adapter)
 /// E8: Regression replay (no false-green across saved sessions)
-
 pub mod fixtures;
 pub mod harbor;
 

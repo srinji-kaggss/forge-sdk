@@ -1,4 +1,3 @@
-
 //! Harbor terminal-bench adapter.
 
 /// Install the Harbor adapter.

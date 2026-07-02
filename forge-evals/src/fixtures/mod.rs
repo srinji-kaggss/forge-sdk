@@ -6,7 +6,6 @@
 /// - Failing test
 /// - Expected edit
 /// - Verification command
-
 use std::path::Path;
 
 /// Create a synthetic repo fixture at the given path.

@@ -295,7 +295,8 @@ impl Agent for LifecycleAgent {
             if let Some(reason) = state.should_stop() {
                 return AgentResult::new_premature_shutdown(reason, &state.steps);
             }
-            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PreModelCall, state).await {
+            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PreModelCall, state).await
+            {
                 return AgentResult::new_premature_shutdown(reason, &state.steps);
             }
             let port: &dyn ModelPort = match state.model_port.as_ref() {
@@ -312,7 +313,13 @@ impl Agent for LifecycleAgent {
             }
 
             // Use generate_with_tools when tools are registered, plain generate otherwise
-            let response = if !tool_specs.is_empty() && self.tools.iter().any(|t| matches!(t.classification(), crate::permission::ActionClassification::Safe)) {
+            let response = if !tool_specs.is_empty()
+                && self.tools.iter().any(|t| {
+                    matches!(
+                        t.classification(),
+                        crate::permission::ActionClassification::Safe
+                    )
+                }) {
                 match port.generate_with_tools("", &messages, &tool_specs).await {
                     Ok(r) => r,
                     Err(e) => {
@@ -338,7 +345,8 @@ impl Agent for LifecycleAgent {
             state.total_cost +=
                 response.input_tokens as f64 * 0.000001 + response.output_tokens as f64 * 0.000002;
 
-            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PostModelCall, state).await {
+            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PostModelCall, state).await
+            {
                 return AgentResult::new_premature_shutdown(reason, &state.steps);
             }
 
@@ -914,5 +922,4 @@ mod tests {
         assert!(passed);
         assert!(result.success);
     }
-
 }

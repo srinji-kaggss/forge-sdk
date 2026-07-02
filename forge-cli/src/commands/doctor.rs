@@ -20,7 +20,10 @@ pub async fn execute(args: &DoctorArgs) -> DoctorReport {
                 DoctorStatus::Fail => "FAIL",
                 DoctorStatus::Warn => "WARN",
             };
-            println!("[{:>4}] {}: {} ({:.0}ms)", status_str, check.label, check.detail, check.duration_ms);
+            println!(
+                "[{:>4}] {}: {} ({:.0}ms)",
+                status_str, check.label, check.detail, check.duration_ms
+            );
         }
     }
     report

@@ -1,5 +1,5 @@
-use forge_core::permission::{PermissionGate, PermissionMode};
 use forge_core::config::ForgeConfig;
+use forge_core::permission::{PermissionGate, PermissionMode};
 
 pub struct HarnessBuilder {
     permission_mode: PermissionMode,
@@ -8,7 +8,10 @@ pub struct HarnessBuilder {
 
 impl HarnessBuilder {
     pub fn new() -> Self {
-        Self { permission_mode: PermissionMode::Yolo, config: None }
+        Self {
+            permission_mode: PermissionMode::Yolo,
+            config: None,
+        }
     }
     pub fn with_permission_mode(mut self, mode: PermissionMode) -> Self {
         self.permission_mode = mode;
@@ -22,11 +25,19 @@ impl HarnessBuilder {
         let config = self.config.unwrap_or_default();
         let pm = self.permission_mode.clone();
         let gate = PermissionGate::new(pm.clone());
-        Ok(AssembledHarness { gate, config, permission_mode: pm })
+        Ok(AssembledHarness {
+            gate,
+            config,
+            permission_mode: pm,
+        })
     }
 }
 
-impl Default for HarnessBuilder { fn default() -> Self { Self::new() } }
+impl Default for HarnessBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct AssembledHarness {
     pub gate: PermissionGate,

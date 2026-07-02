@@ -1,4 +1,4 @@
-pub mod run;
-pub mod doctor;
-pub mod session;
 pub mod audit;
+pub mod doctor;
+pub mod run;
+pub mod session;

@@ -163,10 +163,18 @@ mod tests {
 
     #[test]
     fn test_claim_status_transitions() {
-        assert!(ClaimStatus::Asserted.transition_to(ClaimStatus::Verified).is_ok());
-        assert!(ClaimStatus::Asserted.transition_to(ClaimStatus::Refuted).is_err());
-        assert!(ClaimStatus::Verified.transition_to(ClaimStatus::Disputed).is_ok());
-        assert!(ClaimStatus::Refuted.transition_to(ClaimStatus::Asserted).is_ok());
+        assert!(ClaimStatus::Asserted
+            .transition_to(ClaimStatus::Verified)
+            .is_ok());
+        assert!(ClaimStatus::Asserted
+            .transition_to(ClaimStatus::Refuted)
+            .is_err());
+        assert!(ClaimStatus::Verified
+            .transition_to(ClaimStatus::Disputed)
+            .is_ok());
+        assert!(ClaimStatus::Refuted
+            .transition_to(ClaimStatus::Asserted)
+            .is_ok());
     }
 
     #[test]

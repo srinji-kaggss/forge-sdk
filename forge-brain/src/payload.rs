@@ -8,7 +8,6 @@
 /// - OKF query
 /// - user profile/preference claims
 /// - permission mode
-
 use serde::{Deserialize, Serialize};
 
 /// Query parameters for brain/OKF lookup.

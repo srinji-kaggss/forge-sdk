@@ -144,7 +144,9 @@ pub async fn execute(args: &RunArgs) -> AgentResult {
         other => {
             return AgentResult {
                 success: false,
-                output: format!("Invalid permission mode: '{other}'. Use: interactive, yolo, or plan"),
+                output: format!(
+                    "Invalid permission mode: '{other}'. Use: interactive, yolo, or plan"
+                ),
                 steps: vec![],
                 total_steps: 0,
                 total_tokens: 0,

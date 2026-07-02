@@ -104,7 +104,10 @@ fn event_summary(ev: &AgentEvent) -> String {
         AgentEvent::RunStart(rs) => format!("task: {}", rs.task),
         AgentEvent::RunEnd(re) => format!(
             "success:{} steps:{} tokens:{} cost:{:.4}",
-            re.success, re.model_usage.total_steps, re.model_usage.total_tokens, re.model_usage.total_cost
+            re.success,
+            re.model_usage.total_steps,
+            re.model_usage.total_tokens,
+            re.model_usage.total_cost
         ),
         AgentEvent::RunError(err) => format!("error: {}", err.error),
         AgentEvent::Think(t) => format!("{} tokens:{}", truncate(&t.thought, 60), t.tokens_used),

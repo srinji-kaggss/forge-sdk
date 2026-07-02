@@ -81,51 +81,49 @@ async fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        ForgeCommand::Session(args) => {
-            match commands::session::execute(&args).await {
-                Ok(output) => {
-                    println!("{output}");
-                    ExitCode::SUCCESS
-                }
-                Err(err) => {
-                    eprintln!("Session error: {err}");
-                    ExitCode::from(1)
-                }
+        ForgeCommand::Session(args) => match commands::session::execute(&args).await {
+            Ok(output) => {
+                println!("{output}");
+                ExitCode::SUCCESS
             }
-        }
-        ForgeCommand::Audit(args) => {
-            match commands::audit::execute(&args).await {
-                Ok(output) => {
-                    println!("{output}");
-                    ExitCode::SUCCESS
-                }
-                Err(err) => {
-                    eprintln!("Audit error: {err}");
-                    ExitCode::from(1)
-                }
+            Err(err) => {
+                eprintln!("Session error: {err}");
+                ExitCode::from(1)
             }
-        }
-        ForgeCommand::Eval(args) => {
-            match args.action {
-                EvalAction::Smoke { cwd, task, output_format } => {
-                    let run_args = commands::run::RunArgs {
-                        cwd,
-                        task,
-                        config: None,
-                        permission_mode: "yolo".to_string(),
-                        output_format,
-                        verify_command: false,
-                        no_verify: true,
-                        max_steps: Some(3),
-                        max_tokens: Some(500),
-                        max_cost: Some(0.01),
-                        checkpoint_dir: None,
-                    };
-                    let result = commands::run::execute(&run_args).await;
-                    emit_result(result)
-                }
+        },
+        ForgeCommand::Audit(args) => match commands::audit::execute(&args).await {
+            Ok(output) => {
+                println!("{output}");
+                ExitCode::SUCCESS
             }
-        }
+            Err(err) => {
+                eprintln!("Audit error: {err}");
+                ExitCode::from(1)
+            }
+        },
+        ForgeCommand::Eval(args) => match args.action {
+            EvalAction::Smoke {
+                cwd,
+                task,
+                output_format,
+            } => {
+                let run_args = commands::run::RunArgs {
+                    cwd,
+                    task,
+                    config: None,
+                    permission_mode: "yolo".to_string(),
+                    output_format,
+                    verify_command: false,
+                    no_verify: true,
+                    max_steps: Some(3),
+                    max_tokens: Some(500),
+                    max_cost: Some(0.01),
+                    checkpoint_dir: None,
+                };
+                let result = commands::run::execute(&run_args).await;
+                emit_result(result)
+            }
+        },
     }
 }
 
