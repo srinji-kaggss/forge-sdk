@@ -151,37 +151,81 @@ async fn run_hooks(
 #[async_trait]
 impl Agent for LifecycleAgent {
     async fn run(&mut self, state: &mut AgentState) -> AgentResult {
+        let start = std::time::Instant::now();
+        let mut messages: Vec<std::collections::HashMap<String, String>> = Vec::new();
+
+        // Build tool specs if tools are registered
+        let tool_specs: Vec<crate::port::ToolSpec> = self
+            .tools
+            .iter()
+            .map(|t| {
+                let schema = serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        // Generic input schema — tools parse their own args
+                    }
+                });
+                crate::port::ToolSpec::new(t.name(), t.description(), schema)
+            })
+            .collect();
+
         loop {
             if let Some(reason) = state.should_stop() {
                 return AgentResult::new_premature_shutdown(reason, &state.steps);
             }
-            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PreModelCall, state).await
-            {
+            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PreModelCall, state).await {
                 return AgentResult::new_premature_shutdown(reason, &state.steps);
             }
             let port: &dyn ModelPort = match state.model_port.as_ref() {
                 Some(p) => p.as_ref(),
                 None => self.model_port.as_ref(),
             };
-            let mut user_msg = std::collections::HashMap::new();
-            user_msg.insert("role".to_string(), "user".to_string());
-            user_msg.insert("content".to_string(), state.task.as_inner().clone());
-            let response = match port.generate("", &[user_msg]).await {
-                Ok(r) => r,
-                Err(e) => {
-                    return AgentResult::new_premature_shutdown(
-                        format!("Model error: {:?}", e),
-                        &state.steps,
-                    )
+
+            // Build user message from task only on first pass
+            if messages.is_empty() {
+                let mut user_msg = std::collections::HashMap::new();
+                user_msg.insert("role".to_string(), "user".to_string());
+                user_msg.insert("content".to_string(), state.task.as_inner().clone());
+                messages.push(user_msg);
+            }
+
+            // Use generate_with_tools when tools are registered, plain generate otherwise
+            let response = if !tool_specs.is_empty() && self.tools.iter().any(|t| matches!(t.classification(), crate::permission::ActionClassification::Safe)) {
+                match port.generate_with_tools("", &messages, &tool_specs).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return AgentResult::new_premature_shutdown(
+                            format!("Model error: {:?}", e),
+                            &state.steps,
+                        )
+                    }
+                }
+            } else {
+                match port.generate("", &messages).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return AgentResult::new_premature_shutdown(
+                            format!("Model error: {:?}", e),
+                            &state.steps,
+                        )
+                    }
                 }
             };
+
             state.total_tokens = state.total_tokens.saturating_add(response.total_tokens());
             state.total_cost +=
                 response.input_tokens as f64 * 0.000001 + response.output_tokens as f64 * 0.000002;
-            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PostModelCall, state).await
-            {
+
+            if let Err(reason) = run_hooks(&self.hooks, &LifecycleStage::PostModelCall, state).await {
                 return AgentResult::new_premature_shutdown(reason, &state.steps);
             }
+
+            // Append assistant response to conversation history
+            let mut assistant_msg = std::collections::HashMap::new();
+            assistant_msg.insert("role".to_string(), "assistant".to_string());
+            assistant_msg.insert("content".to_string(), response.content.clone());
+            messages.push(assistant_msg);
+
             let tool_calls = response.tool_calls;
             if tool_calls.is_empty() {
                 let mut result = AgentResult::new_success(&state.steps);
@@ -189,6 +233,7 @@ impl Agent for LifecycleAgent {
                 result.total_tokens = state.total_tokens;
                 result.total_cost = state.total_cost;
                 result.model = response.model;
+                result.duration_ms = start.elapsed().as_millis() as u64;
                 return result;
             }
             for tc in &tool_calls {
@@ -244,6 +289,16 @@ impl Agent for LifecycleAgent {
                 {
                     return AgentResult::new_premature_shutdown(reason, &state.steps);
                 }
+                // Append tool result to conversation history for next loop iteration
+                let mut tool_result_msg = std::collections::HashMap::new();
+                tool_result_msg.insert("role".to_string(), "tool".to_string());
+                tool_result_msg.insert("content".to_string(), obs.clone());
+                tool_result_msg.insert(
+                    "tool_call_id".to_string(),
+                    tc.id.clone().unwrap_or_default(),
+                );
+                messages.push(tool_result_msg);
+
                 let step = crate::step::AgentStep::new(
                     state.steps.len() as u32,
                     &response.content,

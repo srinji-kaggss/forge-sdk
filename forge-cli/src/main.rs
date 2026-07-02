@@ -1,3 +1,6 @@
+mod tools;
+
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -75,7 +78,11 @@ async fn main() -> ExitCode {
         Ok(provider) => Arc::new(provider),
         Err(err) => return emit_result(provider_failure(&config, err)),
     };
-    let mut agent = LifecycleAgent::new(provider as Arc<dyn ModelPort>, vec![], vec![]);
+    let mut agent = LifecycleAgent::new(
+        provider as Arc<dyn ModelPort>,
+        tools::default_tools(),
+        vec![],
+    );
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
 
