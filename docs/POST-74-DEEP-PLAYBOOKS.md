@@ -34,6 +34,15 @@ This folder turns that into executable engineering work. Do not reopen the produ
 5. [Runtime UX And Control Surface](playbooks/005-runtime-ux-control-surface.md)
 6. [Evals And Field Tests](playbooks/006-evals-field-tests.md)
 
+## Implementation Dispatch
+
+Use [Post-PR77 Implementation Dispatch](implementation-specs/README.md) for
+the next three coding sessions:
+
+- [Session A Runtime Split](implementation-specs/session-a-runtime-split.md)
+- [Session B Field-Test Receipts](implementation-specs/session-b-field-test-receipts.md)
+- [Session C Brain Payload v0](implementation-specs/session-c-brain-payload-v0.md)
+
 ## Non-Negotiable Gates
 
 - A repo-driving task with no repo tools must fail explicitly.
@@ -56,4 +65,3 @@ This folder turns that into executable engineering work. Do not reopen the produ
 ## Implementation Rule
 
 Each future PR must pick exactly one playbook card and land the code, tests, and documentation receipt for that card. Planning-only PRs are not acceptable after this point.
-
