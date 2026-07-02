@@ -30,8 +30,10 @@ pub mod verifier;
 // -- re-exports: event -------------------------------------------------------
 pub use event::{
     ActionEvent, AgentEvent, ConvergenceEvent, Correlation, DecisionEvent, FileEditEvent,
-    ObservationEvent, PermissionGateEvent, RunEndEvent, RunErrorEvent, RunStartEvent,
-    StateUpdateEvent, ThinkEvent, TokenUsageEvent, VerificationEvent,
+    ModelRequestEvent, ModelResponseEvent, ModelUsageEvent, ObservationEvent,
+    PermissionDecisionEvent, PermissionGateEvent, PermissionRequestEvent, RunEndEvent,
+    RunErrorEvent, RunStartEvent, StateUpdateEvent, ThinkEvent, TokenUsageEvent,
+    ToolCallEvent, ToolResultEvent, VerificationEvent, VerifyEndEvent, VerifyStartEvent,
 };
 
 // -- re-exports: result ------------------------------------------------------

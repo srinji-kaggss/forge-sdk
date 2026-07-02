@@ -1,3 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["forge-core", "forge-core-security", "forge-cli", "forge-providers", "forge-tui"]
+members = [
+    "forge-core",
+    "forge-core-security",
+    "forge-cli",
+    "forge-providers",
+    "forge-tui",
+    "forge-harness",
+    "forge-brain",
+    "forge-evals",
+]
+

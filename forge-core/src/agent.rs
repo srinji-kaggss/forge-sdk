@@ -11,7 +11,7 @@ use forge_core_security::sandbox::SandboxRoot;
 use crate::event::AgentEvent;
 use crate::permission::{ActionClassification, PermissionGate, PermissionMode};
 use crate::port::ModelPort;
-use crate::result::AgentResult;
+use crate::result::{AgentResult, FailureReason};
 use crate::step::AgentStep;
 use crate::verifier::VerifierPipeline;
 
@@ -129,6 +129,128 @@ impl LifecycleAgent {
             .iter()
             .find(|t| t.name() == name)
             .map(|b| b.as_ref())
+    }
+
+    /// Terminal result classifier — checks 6 fail conditions before accepting `success = true`.
+    ///
+    /// Modifies `result` in place, setting `success = false` and `failure_reason` if any
+    /// condition fails. Returns `true` if the result passes all checks (still successful).
+    pub fn classify_result(&self, state: &AgentState, result: &mut AgentResult) -> bool {
+        let task_lower = state.task.as_inner().to_lowercase();
+
+        // 1. Repo-driving task with no repo tools configured
+        let is_repo_task = task_lower.contains("edit")
+            || task_lower.contains("write")
+            || task_lower.contains("create")
+            || task_lower.contains("modify")
+            || task_lower.contains("repo")
+            || task_lower.contains("file")
+            || task_lower.contains("add ")
+            || task_lower.contains("fix")
+            || task_lower.contains("implement")
+            || task_lower.contains("build");
+        // We consider the task "repo-driving" if repo-related keywords exist
+        // and the agent has no tools configured.
+        if is_repo_task && self.tools.is_empty() {
+            result.success = false;
+            result.failure_reason = Some(FailureReason::NoToolsConfigured);
+            return false;
+        }
+
+        // 2. Model named a file that does not exist (PhantomFile)
+        // Check steps for tool invocations that returned "not found" or "does not exist"
+        for step in &state.steps {
+            let obs_lower = step.observation.to_lowercase();
+            let has_file_ref = step.tool_name.as_deref() == Some("read_file")
+                || step.tool_name.as_deref() == Some("grep");
+            if has_file_ref
+                && (obs_lower.contains("does not exist")
+                    || obs_lower.contains("not found")
+                    || obs_lower.contains("\"exists\": false"))
+            {
+                let path = step
+                    .action_input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                result.success = false;
+                result.failure_reason = Some(FailureReason::PhantomFile(path.to_string()));
+                return false;
+            }
+        }
+
+        // 3. Edit task ended with no edits and no explicit impossible reason
+        let is_edit_task = task_lower.contains("edit")
+            || task_lower.contains("write")
+            || task_lower.contains("create")
+            || task_lower.contains("modify")
+            || task_lower.contains("fix");
+        if is_edit_task && result.edits_made.is_empty() && result.failure_reason.is_none() {
+            // Check if the final output contains an explicit "impossible" reason
+            let output_lower = result.output.to_lowercase();
+            let has_impossible = output_lower.contains("cannot")
+                || output_lower.contains("impossible")
+                || output_lower.contains("unable")
+                || output_lower.contains("not possible")
+                || output_lower.contains("can't");
+            if !has_impossible {
+                result.success = false;
+                result.failure_reason = Some(FailureReason::NoEdit);
+                return false;
+            }
+        }
+
+        // 4. Verification was requested but did not run
+        // Check if verification pipeline has gates configured but results are empty
+        if !state.verifier.gates().is_empty() && result.verification.is_empty() {
+            result.success = false;
+            result.failure_reason = Some(FailureReason::VerificationNotRun);
+            return false;
+        }
+
+        let has_tool_error = state.steps.iter().any(|s| {
+            s.observation.contains("Tool error:")
+                || s.observation.contains("Permission denied")
+                || s.observation.contains("ExecutionFailed")
+                || s.observation.contains("command timed out")
+        });
+        if has_tool_error && result.success {
+            let detail = state
+                .steps
+                .iter()
+                .find(|s| {
+                    s.observation.contains("Tool error:")
+                        || s.observation.contains("Permission denied")
+                        || s.observation.contains("ExecutionFailed")
+                        || s.observation.contains("command timed out")
+                })
+                .map(|s| {
+                    let obs = s.observation.chars().take(80).collect::<String>();
+                    format!("{}: {}", s.action, obs)
+                })
+                .unwrap_or_default();
+            result.success = false;
+            result.failure_reason = Some(FailureReason::UnacknowledgedToolFailure(detail));
+            return false;
+        }
+
+        // 5. Verification was requested but did not run
+        // Check if verification pipeline has gates configured but results are empty
+        if !state.verifier.gates().is_empty() && result.verification.is_empty() {
+            result.success = false;
+            result.failure_reason = Some(FailureReason::VerificationNotRun);
+            return false;
+        }
+        // 6. Tool-capable run silently fell back to no-tool chat
+        let has_tools = !self.tools.is_empty();
+        let tool_used_in_steps = state.steps.iter().any(|s| s.tool_name.is_some());
+        if has_tools && !tool_used_in_steps && result.success {
+            result.success = false;
+            result.failure_reason = Some(FailureReason::SilentFallback);
+            return false;
+        }
+
+        true
     }
 }
 
@@ -348,10 +470,17 @@ impl Agent for LifecycleAgent {
                 config_version: String::new(),
             },
             success: result.success,
-            total_steps: result.total_steps,
-            total_tokens: result.total_tokens,
-            total_cost: result.total_cost,
-            duration_ms: 0,
+            failure_reason: result.failure_reason.clone(),
+            change_manifest: result.change_manifest.clone(),
+            verification: result.verification.clone(),
+            model_usage: crate::event::ModelUsageEvent::new(
+                result.total_steps,
+                result.total_tokens,
+                result.total_cost,
+                0,
+            ),
+            trace_id: result.trace_id.clone(),
+            session_id: result.run_id.clone(),
         }));
         result
     }
@@ -596,4 +725,194 @@ mod tests {
         assert!(result.total_cost > 0.0);
         assert_eq!(result.model, "test");
     }
+
+    struct DummyTool;
+
+    #[async_trait]
+    impl Tool for DummyTool {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn name(&self) -> &'static str {
+            "dummy"
+        }
+
+        fn description(&self) -> &'static str {
+            "dummy tool for tests"
+        }
+
+        fn classification(&self) -> ActionClassification {
+            ActionClassification::Safe
+        }
+
+        async fn call(
+            &self,
+            _input: Self::Input,
+            _sandbox: &SandboxRoot,
+        ) -> Result<Self::Output, ToolError> {
+            Ok(serde_json::json!({"done": true}))
+        }
+    }
+
+    #[test]
+    fn test_honest_success_no_tools_repo_task() {
+        let agent = LifecycleAgent::new(
+            std::sync::Arc::new(ScriptedPort {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            vec![],
+            vec![],
+        );
+        let sandbox = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
+        let task = Trusted::new_internal("edit the README file".into());
+        let gate = PermissionGate::new(PermissionMode::Yolo);
+        let vp = VerifierPipeline::with_default_gates(None);
+        let state = AgentState {
+            task,
+            sandbox,
+            cwd: PathBuf::from("/tmp"),
+            steps: vec![],
+            files_read_in_session: vec![],
+            permission_mode: PermissionMode::Yolo,
+            permission_gate: gate,
+            verifier: vp,
+            model_port: None,
+            total_tokens: 0,
+            total_cost: 0.0,
+            max_steps: 10,
+            max_tokens: None,
+            max_cost: None,
+        };
+
+        let mut result = AgentResult::new_success(&state.steps);
+        result.output = "done".into();
+        agent.classify_result(&state, &mut result);
+
+        assert!(!result.success);
+        assert_eq!(
+            result.failure_reason,
+            Some(crate::result::FailureReason::NoToolsConfigured)
+        );
+    }
+
+    #[test]
+    fn test_honest_success_no_edit_task() {
+        let agent = LifecycleAgent::new(
+            std::sync::Arc::new(ScriptedPort {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            vec![Box::new(DummyTool)],
+            vec![],
+        );
+        let sandbox = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
+        let task = Trusted::new_internal("write a new file".into());
+        let gate = PermissionGate::new(PermissionMode::Yolo);
+        let vp = VerifierPipeline::with_default_gates(None);
+        let state = AgentState {
+            task,
+            sandbox,
+            cwd: PathBuf::from("/tmp"),
+            steps: vec![],
+            files_read_in_session: vec![],
+            permission_mode: PermissionMode::Yolo,
+            permission_gate: gate,
+            verifier: vp,
+            model_port: None,
+            total_tokens: 0,
+            total_cost: 0.0,
+            max_steps: 10,
+            max_tokens: None,
+            max_cost: None,
+        };
+
+        let mut result = AgentResult::new_success(&state.steps);
+        result.output = "I did nothing".into();
+        agent.classify_result(&state, &mut result);
+
+        assert!(!result.success);
+        assert_eq!(
+            result.failure_reason,
+            Some(crate::result::FailureReason::NoEdit)
+        );
+    }
+
+    #[test]
+    fn test_honest_success_silent_fallback() {
+        let agent = LifecycleAgent::new(
+            std::sync::Arc::new(ScriptedPort {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            vec![Box::new(DummyTool)],
+            vec![],
+        );
+        let sandbox = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
+        let task = Trusted::new_internal("list files".into());
+        let gate = PermissionGate::new(PermissionMode::Yolo);
+        let vp = VerifierPipeline::new(vec![], None);
+        let state = AgentState {
+            task,
+            sandbox,
+            cwd: PathBuf::from("/tmp"),
+            steps: vec![],
+            files_read_in_session: vec![],
+            permission_mode: PermissionMode::Yolo,
+            permission_gate: gate,
+            verifier: vp,
+            model_port: None,
+            total_tokens: 0,
+            total_cost: 0.0,
+            max_steps: 10,
+            max_tokens: None,
+            max_cost: None,
+        };
+
+        let mut result = AgentResult::new_success(&state.steps);
+        result.output = "all good".into();
+        agent.classify_result(&state, &mut result);
+
+        assert!(!result.success);
+        assert_eq!(
+            result.failure_reason,
+            Some(crate::result::FailureReason::SilentFallback)
+        );
+    }
+
+    #[test]
+    fn test_honest_success_passes() {
+        let agent = LifecycleAgent::new(
+            std::sync::Arc::new(ScriptedPort {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            vec![],
+            vec![],
+        );
+        let sandbox = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
+        let task = Trusted::new_internal("summarize the codebase".into());
+        let gate = PermissionGate::new(PermissionMode::Yolo);
+        let vp = VerifierPipeline::new(vec![], None);
+        let state = AgentState {
+            task,
+            sandbox,
+            cwd: PathBuf::from("/tmp"),
+            steps: vec![],
+            files_read_in_session: vec![],
+            permission_mode: PermissionMode::Yolo,
+            permission_gate: gate,
+            verifier: vp,
+            model_port: None,
+            total_tokens: 0,
+            total_cost: 0.0,
+            max_steps: 10,
+            max_tokens: None,
+            max_cost: None,
+        };
+
+        let mut result = AgentResult::new_success(&state.steps);
+        result.output = "The codebase has...".into();
+        let passed = agent.classify_result(&state, &mut result);
+
+        assert!(passed);
+        assert!(result.success);
+    }
+
 }

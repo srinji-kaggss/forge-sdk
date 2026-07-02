@@ -1,3 +1,5 @@
+use crate::result::{ChangeManifest, FailureReason, VerificationEvidence};
+
 /// Correlation keys carried by every event — ADR-1 (hash-chain observable).
 ///
 /// Every event in the forge system carries a `Correlation` so that the full
@@ -19,11 +21,19 @@ pub enum AgentEvent {
     RunStart(RunStartEvent),
     RunEnd(RunEndEvent),
     RunError(RunErrorEvent),
+    ModelRequest(ModelRequestEvent),
+    ModelResponse(ModelResponseEvent),
+    ToolCall(ToolCallEvent),
+    ToolResult(ToolResultEvent),
+    PermissionRequest(PermissionRequestEvent),
+    PermissionDecision(PermissionDecisionEvent),
+    FileEdit(FileEditEvent),
+    VerifyStart(VerifyStartEvent),
+    VerifyEnd(VerifyEndEvent),
     Think(ThinkEvent),
     Act(ActionEvent),
     Observe(ObservationEvent),
     Verify(VerificationEvent),
-    FileEdit(FileEditEvent),
     TokenUsage(TokenUsageEvent),
     StateUpdate(StateUpdateEvent),
     Decide(DecisionEvent),
@@ -66,15 +76,40 @@ impl RunStartEvent {
     }
 }
 
-/// Fired when a run completes successfully.
+/// Fired when a run completes.
+///
+/// Includes full outcome data: success/failure, change manifest,
+/// verification results, model usage, and correlation IDs.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RunEndEvent {
     pub correlation: Correlation,
     pub success: bool,
+    pub failure_reason: Option<FailureReason>,
+    pub change_manifest: Option<ChangeManifest>,
+    pub verification: Vec<VerificationEvidence>,
+    pub model_usage: ModelUsageEvent,
+    pub trace_id: String,
+    pub session_id: String,
+}
+
+/// Model usage summary embedded in RunEndEvent.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModelUsageEvent {
     pub total_steps: u32,
     pub total_tokens: u64,
     pub total_cost: f64,
     pub duration_ms: u64,
+}
+
+impl ModelUsageEvent {
+    pub fn new(total_steps: u32, total_tokens: u64, total_cost: f64, duration_ms: u64) -> Self {
+        Self {
+            total_steps,
+            total_tokens,
+            total_cost,
+            duration_ms,
+        }
+    }
 }
 
 impl RunEndEvent {
@@ -82,18 +117,22 @@ impl RunEndEvent {
     pub fn new(
         correlation: Correlation,
         success: bool,
-        total_steps: u32,
-        total_tokens: u64,
-        total_cost: f64,
-        duration_ms: u64,
+        failure_reason: Option<FailureReason>,
+        change_manifest: Option<ChangeManifest>,
+        verification: Vec<VerificationEvidence>,
+        model_usage: ModelUsageEvent,
+        trace_id: impl Into<String>,
+        session_id: impl Into<String>,
     ) -> Self {
         Self {
             correlation,
             success,
-            total_steps,
-            total_tokens,
-            total_cost,
-            duration_ms,
+            failure_reason,
+            change_manifest,
+            verification,
+            model_usage,
+            trace_id: trace_id.into(),
+            session_id: session_id.into(),
         }
     }
 }
@@ -116,6 +155,117 @@ impl RunErrorEvent {
             correlation,
             error: error.into(),
             failure_reason: failure_reason.into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model request/response events
+// ---------------------------------------------------------------------------
+
+/// Fired when a model request is sent.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModelRequestEvent {
+    pub correlation: Correlation,
+    pub provider: String,
+    pub model: String,
+    pub prompt_tokens: u64,
+}
+
+impl ModelRequestEvent {
+    pub fn new(
+        correlation: Correlation,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        prompt_tokens: u64,
+    ) -> Self {
+        Self {
+            correlation,
+            provider: provider.into(),
+            model: model.into(),
+            prompt_tokens,
+        }
+    }
+}
+
+/// Fired when a model response is received.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModelResponseEvent {
+    pub correlation: Correlation,
+    pub provider: String,
+    pub model: String,
+    pub completion_tokens: u64,
+}
+
+impl ModelResponseEvent {
+    pub fn new(
+        correlation: Correlation,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        completion_tokens: u64,
+    ) -> Self {
+        Self {
+            correlation,
+            provider: provider.into(),
+            model: model.into(),
+            completion_tokens,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool call/result events
+// ---------------------------------------------------------------------------
+
+/// Fired when a tool call is issued by the model.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolCallEvent {
+    pub correlation: Correlation,
+    pub name: String,
+    pub input: String,
+    pub tool_call_id: Option<String>,
+}
+
+impl ToolCallEvent {
+    pub fn new(
+        correlation: Correlation,
+        name: impl Into<String>,
+        input: impl Into<String>,
+        tool_call_id: Option<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            name: name.into(),
+            input: input.into(),
+            tool_call_id,
+        }
+    }
+}
+
+/// Fired when a tool returns a result.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolResultEvent {
+    pub correlation: Correlation,
+    pub name: String,
+    pub output: String,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+impl ToolResultEvent {
+    pub fn new(
+        correlation: Correlation,
+        name: impl Into<String>,
+        output: impl Into<String>,
+        truncated: bool,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            name: name.into(),
+            output: output.into(),
+            truncated,
+            error,
         }
     }
 }
@@ -206,32 +356,139 @@ impl VerificationEvent {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Permission events
+// ---------------------------------------------------------------------------
+
+/// Fired when a permission request is evaluated.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PermissionRequestEvent {
+    pub correlation: Correlation,
+    pub action: String,
+    pub paths: Vec<String>,
+    pub classification: String,
+}
+
+impl PermissionRequestEvent {
+    pub fn new(
+        correlation: Correlation,
+        action: impl Into<String>,
+        paths: Vec<String>,
+        classification: impl Into<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            action: action.into(),
+            paths,
+            classification: classification.into(),
+        }
+    }
+}
+
+/// Fired when a permission decision is made.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PermissionDecisionEvent {
+    pub correlation: Correlation,
+    pub action: String,
+    pub decision: String,
+    pub verification_plan: Option<String>,
+}
+
+impl PermissionDecisionEvent {
+    pub fn new(
+        correlation: Correlation,
+        action: impl Into<String>,
+        decision: impl Into<String>,
+        verification_plan: Option<String>,
+    ) -> Self {
+        Self {
+            correlation,
+            action: action.into(),
+            decision: decision.into(),
+            verification_plan,
+        }
+    }
+}
+
 /// Fired when a file edit is applied.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileEditEvent {
     pub correlation: Correlation,
     pub path: String,
-    pub diff: String,
-    pub action_type: String,
+    pub old_hash: Option<String>,
+    pub new_hash: Option<String>,
+    pub lines_added: u32,
+    pub lines_removed: u32,
 }
 
 impl FileEditEvent {
     pub fn new(
         correlation: Correlation,
         path: impl Into<String>,
-        diff: impl Into<String>,
-        action_type: impl Into<String>,
+        old_hash: Option<String>,
+        new_hash: Option<String>,
+        lines_added: u32,
+        lines_removed: u32,
     ) -> Self {
         Self {
             correlation,
             path: path.into(),
-            diff: diff.into(),
-            action_type: action_type.into(),
+            old_hash,
+            new_hash,
+            lines_added,
+            lines_removed,
         }
     }
 }
 
-/// Fired when token usage is tracked.
+// ---------------------------------------------------------------------------
+// Verification start/end events
+// ---------------------------------------------------------------------------
+
+/// Fired when verification starts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VerifyStartEvent {
+    pub correlation: Correlation,
+    pub command: String,
+}
+
+impl VerifyStartEvent {
+    pub fn new(correlation: Correlation, command: impl Into<String>) -> Self {
+        Self {
+            correlation,
+            command: command.into(),
+        }
+    }
+}
+
+/// Fired when verification ends.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VerifyEndEvent {
+    pub correlation: Correlation,
+    pub command: String,
+    pub exit_code: i32,
+    pub passed: bool,
+}
+
+impl VerifyEndEvent {
+    pub fn new(
+        correlation: Correlation,
+        command: impl Into<String>,
+        exit_code: i32,
+        passed: bool,
+    ) -> Self {
+        Self {
+            correlation,
+            command: command.into(),
+            exit_code,
+            passed,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Token usage
+// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TokenUsageEvent {
     pub correlation: Correlation,

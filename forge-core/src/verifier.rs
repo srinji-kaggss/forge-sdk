@@ -216,6 +216,11 @@ impl VerifierPipeline {
         }
     }
 
+    /// Returns the number of registered gates.
+    pub fn gates(&self) -> &[Box<dyn VerificationGate>] {
+        &self.gates
+    }
+
     /// Run all gates in order. Stops on first failure (fail-fast).
     /// Budget-skipped gates produce `Skipped` evidence.
     pub async fn run_all(&self, ctx: &VerificationContext) -> Vec<VerificationEvidence> {

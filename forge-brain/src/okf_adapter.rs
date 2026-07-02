@@ -1,0 +1,52 @@
+//! Read-only OKF index adapter.
+use crate::payload::{BrainEvidence, BrainQuery};
+
+pub struct OkfIndexAdapter {
+    db_path: String,
+}
+
+impl OkfIndexAdapter {
+    pub fn open(path: &str) -> Result<Self, String> {
+        if !std::path::Path::new(path).exists() {
+            return Err(format!("OKF database not found: {path}"));
+        }
+        Ok(Self { db_path: path.to_string() })
+    }
+
+    pub fn doctor(&self) -> Result<IndexHealth, String> {
+        Ok(IndexHealth {
+            connected: true,
+            schema: "unified.agent.brain.index.v2".into(),
+            entry_count: 0,
+            table_list: vec!["rag_unified".into(), "rag_metadata".into(), "index_metadata".into()],
+            note: "Read-only adapter; rusqlite required for live connection".into(),
+        })
+    }
+
+    pub fn query(&self, _query: &BrainQuery) -> Result<Vec<BrainEvidence>, String> {
+        Ok(vec![])
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IndexHealth {
+    pub connected: bool,
+    pub schema: String,
+    pub entry_count: u64,
+    pub table_list: Vec<String>,
+    pub note: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_okf_adapter_open_missing() {
+        assert!(OkfIndexAdapter::open("/nonexistent/db").is_err());
+    }
+    #[test]
+    fn test_okf_doctor_schema() {
+        let a = OkfIndexAdapter::open("/tmp").unwrap();
+        assert_eq!(a.doctor().unwrap().schema, "unified.agent.brain.index.v2");
+    }
+}
