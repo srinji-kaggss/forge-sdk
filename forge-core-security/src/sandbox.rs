@@ -1,5 +1,5 @@
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
@@ -24,6 +24,7 @@ use cap_std::fs::Dir;
 #[derive(Debug)]
 pub struct SandboxRoot {
     dir: Dir,
+    root: PathBuf,
 }
 
 impl Clone for SandboxRoot {
@@ -33,6 +34,7 @@ impl Clone for SandboxRoot {
                 .dir
                 .try_clone()
                 .expect("SandboxRoot::clone: Dir::try_clone failed"),
+            root: self.root.clone(),
         }
     }
 }
@@ -46,8 +48,14 @@ impl SandboxRoot {
     /// This is the ONLY way to create a SandboxRoot — once constructed, all
     /// file access is capability-bounded to this directory subtree.
     pub fn new(path: impl AsRef<Path>) -> io::Result<Self> {
-        let dir = Dir::open_ambient_dir(path.as_ref(), ambient_authority())?;
-        Ok(Self { dir })
+        let root = std::fs::canonicalize(path.as_ref())?;
+        let dir = Dir::open_ambient_dir(&root, ambient_authority())?;
+        Ok(Self { dir, root })
+    }
+
+    /// Canonical filesystem path for subprocesses that must be rooted in this sandbox.
+    pub fn root_path(&self) -> &Path {
+        &self.root
     }
 
     /// Open a file at `relative_path` within the sandbox root.

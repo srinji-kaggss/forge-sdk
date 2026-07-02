@@ -113,7 +113,7 @@ async fn main() -> ExitCode {
                     config: None,
                     permission_mode: "yolo".to_string(),
                     output_format,
-                    verify_command: false,
+                    verify_command: None,
                     no_verify: true,
                     max_steps: Some(3),
                     max_tokens: Some(500),

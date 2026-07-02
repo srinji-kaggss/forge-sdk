@@ -2,9 +2,34 @@ use async_trait::async_trait;
 use forge_core::agent::{Tool, ToolError};
 use forge_core::permission::ActionClassification;
 use forge_core_security::sandbox::SandboxRoot;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
+
+fn sandbox_relative_path(path: &str) -> Result<&Path, ToolError> {
+    let path = Path::new(path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(ToolError::SandboxViolation {
+            detail: format!("path must stay within sandbox: {}", path.display()),
+        });
+    }
+    Ok(path)
+}
+
+fn sandbox_host_path(sandbox: &SandboxRoot, path: &Path) -> Result<PathBuf, ToolError> {
+    let joined = sandbox.root_path().join(path);
+    if !joined.starts_with(sandbox.root_path()) {
+        return Err(ToolError::SandboxViolation {
+            detail: format!("path escaped sandbox: {}", path.display()),
+        });
+    }
+    Ok(joined)
+}
 
 pub struct WriteFileTool;
 
@@ -75,7 +100,7 @@ impl Tool for PatchFileTool {
     async fn call(
         &self,
         input: Self::Input,
-        _sandbox: &SandboxRoot,
+        sandbox: &SandboxRoot,
     ) -> Result<Self::Output, ToolError> {
         let path =
             input
@@ -91,16 +116,24 @@ impl Tool for PatchFileTool {
                 .ok_or_else(|| ToolError::InvalidInput {
                     detail: "missing 'patch' field".into(),
                 })?;
-        let patch_path = format!("{}.patch", path);
-        std::fs::write(&patch_path, patch).map_err(|e| ToolError::ExecutionFailed {
+        let target_path = sandbox_relative_path(path)?;
+        let patch_path = PathBuf::from(format!("{}.patch", path));
+        let patch_path =
+            sandbox_relative_path(patch_path.to_str().ok_or_else(|| ToolError::InvalidInput {
+                detail: "patch path is not valid UTF-8".into(),
+            })?)?;
+        let patch_host_path = sandbox_host_path(sandbox, patch_path)?;
+        std::fs::write(&patch_host_path, patch).map_err(|e| ToolError::ExecutionFailed {
             detail: format!("write patch: {e}"),
         })?;
-        let out = std::process::Command::new("patch")
-            .arg(path)
+        let out = Command::new("patch")
+            .current_dir(sandbox.root_path())
+            .arg(target_path)
             .arg("-i")
-            .arg(&patch_path)
-            .output();
-        let _ = std::fs::remove_file(&patch_path);
+            .arg(patch_path)
+            .output()
+            .await;
+        let _ = std::fs::remove_file(&patch_host_path);
         match out {
             Ok(output) if output.status.success() => {
                 Ok(serde_json::json!({"path": path, "applied": true}))
@@ -231,5 +264,31 @@ impl Tool for BashTool {
                 detail: "bash timed out".into(),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sandbox() -> SandboxRoot {
+        let dir = std::env::temp_dir().join(format!(
+            "forge_cli_gated_mutation_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        SandboxRoot::new(&dir).unwrap()
+    }
+
+    #[tokio::test]
+    async fn patch_file_rejects_parent_traversal() {
+        let tool = PatchFileTool;
+        let input = serde_json::json!({
+            "path": "../outside.txt",
+            "patch": ""
+        });
+        let err = tool.call(input, &sandbox()).await.unwrap_err();
+        assert!(matches!(err, ToolError::SandboxViolation { .. }));
     }
 }

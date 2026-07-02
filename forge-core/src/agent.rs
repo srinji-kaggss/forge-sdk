@@ -469,14 +469,99 @@ impl Agent for LifecycleAgent {
             max_tokens: state.max_tokens.unwrap_or(0),
         }));
         let result = self.run(state).await;
+        let correlation = crate::event::Correlation {
+            trace_id: result.trace_id.clone(),
+            run_id: result.run_id.clone(),
+            model: result.model.clone(),
+            provider: result.provider.clone(),
+            config_version: String::new(),
+        };
+        let prompt_tokens = result.total_tokens.saturating_sub(
+            state
+                .steps
+                .last()
+                .map(|s| s.tokens_used)
+                .unwrap_or_default(),
+        );
+        let _ = event_tx.try_send(AgentEvent::ModelRequest(
+            crate::event::ModelRequestEvent::new(
+                correlation.clone(),
+                result.provider.clone(),
+                result.model.clone(),
+                prompt_tokens,
+            ),
+        ));
+        let _ = event_tx.try_send(AgentEvent::ModelResponse(
+            crate::event::ModelResponseEvent::new(
+                correlation.clone(),
+                result.provider.clone(),
+                result.model.clone(),
+                result.total_tokens.saturating_sub(prompt_tokens),
+            ),
+        ));
+        let _ = event_tx.try_send(AgentEvent::TokenUsage(crate::event::TokenUsageEvent::new(
+            correlation.clone(),
+            result.total_tokens,
+            result.total_cost,
+            result.total_tokens,
+            result.total_cost,
+        )));
+        for gate_event in state.permission_gate.history() {
+            let action = gate_event.action_label.clone();
+            let _ = event_tx.try_send(AgentEvent::PermissionRequest(
+                crate::event::PermissionRequestEvent::new(
+                    correlation.clone(),
+                    action.clone(),
+                    vec![],
+                    format!("{:?}", gate_event.classification),
+                ),
+            ));
+            let _ = event_tx.try_send(AgentEvent::PermissionDecision(
+                crate::event::PermissionDecisionEvent::new(
+                    correlation.clone(),
+                    action,
+                    format!("{:?}", gate_event.decision),
+                    None,
+                ),
+            ));
+        }
+        for step in &state.steps {
+            let input = serde_json::to_string(&step.action_input).unwrap_or_else(|_| "{}".into());
+            let tool_name = step
+                .tool_name
+                .as_deref()
+                .unwrap_or(step.action.as_str())
+                .to_string();
+            let _ = event_tx.try_send(AgentEvent::Act(crate::event::ActionEvent::new(
+                correlation.clone(),
+                step.action.clone(),
+                input.clone(),
+                tool_name.clone(),
+            )));
+            let _ = event_tx.try_send(AgentEvent::ToolCall(crate::event::ToolCallEvent::new(
+                correlation.clone(),
+                tool_name.clone(),
+                input,
+                None,
+            )));
+            let is_error = step.observation.contains("Tool error:")
+                || step.observation.contains("Permission denied")
+                || step.observation.contains("Unknown tool:");
+            let _ = event_tx.try_send(AgentEvent::Observe(crate::event::ObservationEvent::new(
+                correlation.clone(),
+                step.observation.clone(),
+                if is_error { 1 } else { 0 },
+            )));
+            let _ = event_tx.try_send(AgentEvent::ToolResult(crate::event::ToolResultEvent::new(
+                correlation.clone(),
+                tool_name,
+                step.observation.clone(),
+                false,
+                is_error.then(|| step.observation.clone()),
+            )));
+        }
         let _ = event_tx.try_send(AgentEvent::RunEnd(crate::event::RunEndEvent {
-            correlation: crate::event::Correlation {
-                trace_id: String::new(),
-                run_id: String::new(),
-                model: String::new(),
-                provider: String::new(),
-                config_version: String::new(),
-            },
+            correlation,
             success: result.success,
             failure_reason: result.failure_reason.clone(),
             change_manifest: result.change_manifest.clone(),
@@ -732,6 +817,57 @@ mod tests {
         assert_eq!(result.total_tokens, 10);
         assert!(result.total_cost > 0.0);
         assert_eq!(result.model, "test");
+    }
+
+    #[tokio::test]
+    async fn run_with_events_emits_model_usage_and_end_events() {
+        let mut agent = LifecycleAgent::new(
+            std::sync::Arc::new(ScriptedPort {
+                calls: std::sync::atomic::AtomicUsize::new(1),
+            }),
+            vec![],
+            vec![],
+        );
+        let sandbox = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
+        let gate = PermissionGate::new(PermissionMode::Yolo);
+        let mut state = AgentState {
+            task: Trusted::new_internal("summarize repo".into()),
+            sandbox,
+            cwd: PathBuf::from("/tmp"),
+            steps: vec![],
+            files_read_in_session: vec![],
+            permission_mode: PermissionMode::Yolo,
+            permission_gate: gate,
+            verifier: VerifierPipeline::new(vec![], None),
+            model_port: None,
+            total_tokens: 0,
+            total_cost: 0.0,
+            max_steps: 10,
+            max_tokens: None,
+            max_cost: None,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        let result = agent.run_with_events(&mut state, tx).await;
+
+        assert!(result.success);
+        let mut saw_model_request = false;
+        let mut saw_model_response = false;
+        let mut saw_token_usage = false;
+        let mut saw_run_end = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentEvent::ModelRequest(_) => saw_model_request = true,
+                AgentEvent::ModelResponse(_) => saw_model_response = true,
+                AgentEvent::TokenUsage(_) => saw_token_usage = true,
+                AgentEvent::RunEnd(_) => saw_run_end = true,
+                _ => {}
+            }
+        }
+        assert!(saw_model_request);
+        assert!(saw_model_response);
+        assert!(saw_token_usage);
+        assert!(saw_run_end);
     }
 
     struct DummyTool;

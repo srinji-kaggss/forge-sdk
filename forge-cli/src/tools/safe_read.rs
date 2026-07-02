@@ -2,7 +2,22 @@ use async_trait::async_trait;
 use forge_core::agent::{Tool, ToolError};
 use forge_core::permission::ActionClassification;
 use forge_core_security::sandbox::SandboxRoot;
+use std::path::{Component, Path};
 use tokio::process::Command;
+
+fn sandbox_relative_path(path: &str) -> Result<&Path, ToolError> {
+    let path = Path::new(path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(ToolError::SandboxViolation {
+            detail: format!("path must stay within sandbox: {}", path.display()),
+        });
+    }
+    Ok(path)
+}
 
 pub struct ReadFileTool;
 
@@ -109,7 +124,7 @@ impl Tool for GlobTool {
     async fn call(
         &self,
         input: Self::Input,
-        _sandbox: &SandboxRoot,
+        sandbox: &SandboxRoot,
     ) -> Result<Self::Output, ToolError> {
         let pattern = input
             .get("pattern")
@@ -117,16 +132,28 @@ impl Tool for GlobTool {
             .ok_or_else(|| ToolError::InvalidInput {
                 detail: "missing 'pattern' field".into(),
             })?;
+        let relative_pattern = sandbox_relative_path(pattern)?;
         let max_results = input
             .get("max_results")
             .and_then(|v| v.as_u64())
             .unwrap_or(100) as usize;
-        let mut matches: Vec<String> = glob::glob(pattern)
+        let host_pattern = sandbox.root_path().join(relative_pattern);
+        let host_pattern = host_pattern
+            .to_str()
+            .ok_or_else(|| ToolError::InvalidInput {
+                detail: "glob pattern is not valid UTF-8".into(),
+            })?
+            .to_string();
+        let mut matches: Vec<String> = glob::glob(&host_pattern)
             .map_err(|e| ToolError::ExecutionFailed {
                 detail: format!("invalid glob: {e}"),
             })?
             .filter_map(Result::ok)
-            .map(|p| p.to_string_lossy().to_string())
+            .filter_map(|p| {
+                p.strip_prefix(sandbox.root_path())
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string())
+            })
             .collect();
         matches.sort();
         if matches.len() > max_results {
@@ -223,7 +250,7 @@ impl Tool for SearchRepoTool {
     async fn call(
         &self,
         input: Self::Input,
-        _sandbox: &SandboxRoot,
+        sandbox: &SandboxRoot,
     ) -> Result<Self::Output, ToolError> {
         let pattern = input
             .get("pattern")
@@ -236,6 +263,7 @@ impl Tool for SearchRepoTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(20) as usize;
         let root_dir = input.get("root").and_then(|v| v.as_str()).unwrap_or(".");
+        let root_dir = sandbox_relative_path(root_dir)?;
 
         // Block shell metacharacters to prevent injection
         if pattern.contains('$')
@@ -252,6 +280,7 @@ impl Tool for SearchRepoTool {
         // Security relies on: (1) shell metacharacter blocking, (2) -- separator,
         // (3) grep reads only within root_dir.
         let output = Command::new("grep")
+            .current_dir(sandbox.root_path())
             .args([
                 "-rn",
                 "--include=*.rs",
@@ -262,7 +291,9 @@ impl Tool for SearchRepoTool {
                 "-e",
                 pattern,
                 "--",
-                root_dir,
+                root_dir.to_str().ok_or_else(|| ToolError::InvalidInput {
+                    detail: "root path is not valid UTF-8".into(),
+                })?,
             ])
             .output()
             .await
@@ -305,15 +336,53 @@ impl Tool for RepoMapTool {
     async fn call(
         &self,
         _input: Self::Input,
-        _sandbox: &SandboxRoot,
+        sandbox: &SandboxRoot,
     ) -> Result<Self::Output, ToolError> {
-        let output = std::process::Command::new("tree")
+        let output = Command::new("tree")
+            .current_dir(sandbox.root_path())
             .args(["-L", "3", "--dirsfirst", "-I", ".git|target"])
             .output()
+            .await
             .map_err(|e| ToolError::ExecutionFailed {
                 detail: format!("tree failed: {e}"),
             })?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(serde_json::json!({"tree": stdout.to_string()}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sandbox() -> SandboxRoot {
+        let dir =
+            std::env::temp_dir().join(format!("forge_cli_safe_read_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        SandboxRoot::new(&dir).unwrap()
+    }
+
+    #[tokio::test]
+    async fn glob_rejects_absolute_paths() {
+        let tool = GlobTool;
+        let err = tool
+            .call(serde_json::json!({"pattern": "/tmp/*"}), &sandbox())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::SandboxViolation { .. }));
+    }
+
+    #[tokio::test]
+    async fn search_repo_rejects_parent_root() {
+        let tool = SearchRepoTool;
+        let err = tool
+            .call(
+                serde_json::json!({"pattern": "needle", "root": "../"}),
+                &sandbox(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::SandboxViolation { .. }));
     }
 }
