@@ -54,17 +54,32 @@ mod tests {
     fn test_okf_doctor_reports_degraded() {
         let a = OkfIndexAdapter::open("/tmp").unwrap();
         let health = a.doctor().unwrap();
-        assert!(!health.connected, "Should report not connected without rusqlite");
+        assert!(
+            !health.connected,
+            "Should report not connected without rusqlite"
+        );
         assert_eq!(health.schema, "unified.agent.brain.index.v2");
-        assert!(health.note.contains("DEGRADED"), "Note should indicate degraded state");
+        assert!(
+            health.note.contains("DEGRADED"),
+            "Note should indicate degraded state"
+        );
     }
 
     #[test]
     fn test_okf_query_returns_not_implemented() {
         let a = OkfIndexAdapter::open("/tmp").unwrap();
-        let q = crate::BrainQuery { task: "test".into(), cwd: ".".into(), repo: None, domains: vec![], max_results: 10 };
+        let q = crate::BrainQuery {
+            task: "test".into(),
+            cwd: ".".into(),
+            repo: None,
+            domains: vec![],
+            max_results: 10,
+        };
         let result = a.query(&q);
         assert!(result.is_err(), "Query should fail without rusqlite");
-        assert!(result.unwrap_err().contains("NotImplemented"), "Error should say NotImplemented");
+        assert!(
+            result.unwrap_err().contains("NotImplemented"),
+            "Error should say NotImplemented"
+        );
     }
 }

@@ -24,8 +24,8 @@
 | `src/forge_sdk/policies/` | **keep as reference** | Permission policy patterns |
 | `src/forge_sdk/security.py` | **ported (Rust)** | forge-core-security crate |
 | `src/forge_sdk/text_tokens.py` | **keep as reference** | Token counting reference |
-| `src/forge_sdk/tools/` | **ported (Rust)** | forge-harness/src/aci/tools.rs |
-| `src/forge_sdk/tools/registry.py` | **ported (Rust)** | default_tools() in tools.rs |
+| `src/forge_sdk/tools/` | **ported (Rust)** | forge-cli/src/tools/ (mod, safe_read, gated_mutation, grep) |
+| `src/forge_sdk/tools/registry.py` | **ported (Rust)** | forge-cli/src/main.rs, default_tools() registers 11 tools |
 | `src/forge_sdk/tracing/` | **ported (Rust)** | forge-core/src/tracer.rs |
 | `src/forge_sdk/verifiers/` | **ported (Rust)** | forge-core/src/verifier.rs |
 

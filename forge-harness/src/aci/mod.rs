@@ -1,8 +1,4 @@
-/// Agent-Computer Interface: tools and tool types for the forge harness.
-///
-/// This module defines the canonical tool implementations used by the forge
-/// agent loop. Tools are moved here from forge-cli/src/tools.rs per Playbook 003
-/// (SDK/Harness/Agent Split, Card 1).
+/// ACI: tool type definitions for the forge harness.
+/// Canonical tool implementations: forge-cli/src/tools/.
+/// The harness provides the Tool trait; the CLI registers tools.
 pub mod tools;
-
-pub use tools::*;
