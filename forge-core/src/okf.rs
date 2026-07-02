@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_okf_doc_type_all_variants() {
-        let types = vec![
+        let types = [
             OkfDocType::Requirement,
             OkfDocType::Solution,
             OkfDocType::Interface,
@@ -217,4 +217,3 @@ mod tests {
         assert_eq!(types.len(), 7);
     }
 }
-

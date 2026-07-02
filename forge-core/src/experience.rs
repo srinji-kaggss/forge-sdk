@@ -137,7 +137,7 @@ impl Episode {
             id: obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             task: obj.get("task").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             outcome: obj.get("outcome").and_then(|v| serde_json::from_value::<EpisodeOutcome>(v.clone()).ok()).unwrap_or(EpisodeOutcome::Success),
-            steps: obj.get("steps").and_then(|v| v.as_array()).map(|a| a.clone()).unwrap_or_default(),
+            steps: obj.get("steps").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
             tools_used: obj.get("tools_used").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()).unwrap_or_default(),
             tokens_used: obj.get("tokens_used").and_then(|v| v.as_u64()).unwrap_or(0),
             duration_ms: obj.get("duration_ms").and_then(|v| v.as_f64()).unwrap_or(0.0),
