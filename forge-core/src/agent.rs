@@ -184,7 +184,12 @@ impl Agent for LifecycleAgent {
             }
             let tool_calls = response.tool_calls;
             if tool_calls.is_empty() {
-                return AgentResult::new_success(&state.steps);
+                let mut result = AgentResult::new_success(&state.steps);
+                result.output = response.content;
+                result.total_tokens = state.total_tokens;
+                result.total_cost = state.total_cost;
+                result.model = response.model;
+                return result;
             }
             for tc in &tool_calls {
                 let mut skip_result = None;
@@ -496,5 +501,44 @@ mod tests {
             history[0].decision,
             crate::permission::PermissionDecision::Deny { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn no_tool_completion_preserves_model_output_and_usage() {
+        let mut agent = LifecycleAgent::new(
+            std::sync::Arc::new(ScriptedPort {
+                calls: std::sync::atomic::AtomicUsize::new(1),
+            }),
+            vec![],
+            vec![],
+        );
+        let sandbox = SandboxRoot::new(std::env::current_dir().unwrap()).unwrap();
+        let task = Trusted::new_internal("summarize repo".into());
+        let gate = PermissionGate::new(PermissionMode::Yolo);
+        let vp = VerifierPipeline::with_default_gates(None);
+        let mut state = AgentState {
+            task,
+            sandbox,
+            cwd: PathBuf::from("/tmp"),
+            steps: vec![],
+            files_read_in_session: vec![],
+            permission_mode: PermissionMode::Yolo,
+            permission_gate: gate,
+            verifier: vp,
+            model_port: None,
+            total_tokens: 0,
+            total_cost: 0.0,
+            max_steps: 10,
+            max_tokens: None,
+            max_cost: None,
+        };
+
+        let result = agent.run(&mut state).await;
+
+        assert!(result.success);
+        assert_eq!(result.output, "done");
+        assert_eq!(result.total_tokens, 10);
+        assert!(result.total_cost > 0.0);
+        assert_eq!(result.model, "test");
     }
 }

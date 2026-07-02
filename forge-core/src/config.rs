@@ -378,10 +378,7 @@ mod test_helpers {
         pub(super) fn new(prefix: &str) -> Self {
             static COUNTER: AtomicU64 = AtomicU64::new(0);
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let path = env::temp_dir().join(format!(
-                "{prefix}-{}-{n}",
-                std::process::id()
-            ));
+            let path = env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()));
             std::fs::create_dir_all(&path).unwrap();
             Self { path }
         }
